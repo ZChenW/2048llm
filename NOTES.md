@@ -1,8 +1,8 @@
-# gpt_version Maxtile Pipeline Notes
+# zhihu_version Maxtile Pipeline Notes
 
 ## Code Changes
 
-- Added CLI support to `gpt_version/train_maxtile.cu`:
+- Added CLI support to `zhihu_version/train_maxtile.cu`:
   - `--help`
   - `--episodes N`
   - `--lr FLOAT`
@@ -20,12 +20,12 @@
   - `weights_latest.bin`
   - `ckpt_<episodes>.bin`
   - matching `.json` metadata files
-- Added CLI support to `gpt_version/check_2048_rate.cpp`:
+- Added CLI support to `zhihu_version/check_2048_rate.cpp`:
   - legacy positional usage still works: `./check_2048_rate weights_latest.bin`
   - new flags: `--weights`, `--games`, `--depth`, `--seed`, `--report-every`
   - old default depth remains 3
-- Added `gpt_version/scripts/eval_checkpoints.py` for checkpoint sweep.
-- Added `gpt_version/scripts/test_pipeline_cli.py` as a lightweight CLI/build regression test.
+- Added `zhihu_version/scripts/eval_checkpoints.py` for checkpoint sweep.
+- Added `zhihu_version/scripts/test_pipeline_cli.py` as a lightweight CLI/build regression test.
 - Fixed `train_maxtile.cu` path creation after review: `ensure_dir()` no longer mutates the accumulated path while trimming trailing slashes, so nested paths such as `../runs/maxtile_50m` are created correctly instead of malformed names like `..runs`.
 
 ## Verification
@@ -99,35 +99,71 @@ Sweep outputs:
 Quick depth-1 sweep over all 10 checkpoints found no 2048 wins:
 
 | Checkpoint | Games | Depth | Wins | Win rate |
-|---|---:|---:|---:|---:|
-| 1M | 1000 | 1 | 0 | 0.0000 |
-| 2M | 1000 | 1 | 0 | 0.0000 |
-| 3M | 1000 | 1 | 0 | 0.0000 |
-| 4M | 1000 | 1 | 0 | 0.0000 |
-| 5M | 1000 | 1 | 0 | 0.0000 |
-| 6M | 1000 | 1 | 0 | 0.0000 |
-| 7M | 1000 | 1 | 0 | 0.0000 |
-| 8M | 1000 | 1 | 0 | 0.0000 |
-| 9M | 1000 | 1 | 0 | 0.0000 |
-| 10M | 1000 | 1 | 0 | 0.0000 |
+| ---------- | ----: | ----: | ---: | -------: |
+| 1M         |  1000 |     1 |    0 |   0.0000 |
+| 2M         |  1000 |     1 |    0 |   0.0000 |
+| 3M         |  1000 |     1 |    0 |   0.0000 |
+| 4M         |  1000 |     1 |    0 |   0.0000 |
+| 5M         |  1000 |     1 |    0 |   0.0000 |
+| 6M         |  1000 |     1 |    0 |   0.0000 |
+| 7M         |  1000 |     1 |    0 |   0.0000 |
+| 8M         |  1000 |     1 |    0 |   0.0000 |
+| 9M         |  1000 |     1 |    0 |   0.0000 |
+| 10M        |  1000 |     1 |    0 |   0.0000 |
 
 Because all depth-1 quick results tied, the top-3 script selected 1M, 2M, and 3M by tie-break.
 
 Top-3 final eval:
 
 | Checkpoint | Games | Depth | Wins | Failures | Win rate | Avg steps | Eval time |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 1M | 10000 | 1 | 0 | 10000 | 0.0000 | 101.58 | 0.09s |
-| 1M | 10000 | 2 | 0 | 10000 | 0.0000 | 223.62 | 3.80s |
-| 1M | 10000 | 3 | 3 | 9997 | 0.0003 | 400.39 | 102.63s |
-| 2M | 10000 | 1 | 0 | 10000 | 0.0000 | 101.63 | 0.20s |
-| 2M | 10000 | 2 | 0 | 10000 | 0.0000 | 223.72 | 17.94s |
-| 2M | 10000 | 3 | 4 | 9996 | 0.0004 | 400.28 | 501.29s |
-| 3M | 10000 | 1 | 0 | 10000 | 0.0000 | 101.67 | 0.21s |
-| 3M | 10000 | 2 | 0 | 10000 | 0.0000 | 223.07 | 10.57s |
-| 3M | 10000 | 3 | 4 | 9996 | 0.0004 | 400.91 | 444.03s |
+| ---------- | ----: | ----: | ---: | -------: | -------: | --------: | --------: |
+| 1M         | 10000 |     1 |    0 |    10000 |   0.0000 |    101.58 |     0.09s |
+| 1M         | 10000 |     2 |    0 |    10000 |   0.0000 |    223.62 |     3.80s |
+| 1M         | 10000 |     3 |    3 |     9997 |   0.0003 |    400.39 |   102.63s |
+| 2M         | 10000 |     1 |    0 |    10000 |   0.0000 |    101.63 |     0.20s |
+| 2M         | 10000 |     2 |    0 |    10000 |   0.0000 |    223.72 |    17.94s |
+| 2M         | 10000 |     3 |    4 |     9996 |   0.0004 |    400.28 |   501.29s |
+| 3M         | 10000 |     1 |    0 |    10000 |   0.0000 |    101.67 |     0.21s |
+| 3M         | 10000 |     2 |    0 |    10000 |   0.0000 |    223.07 |    10.57s |
+| 3M         | 10000 |     3 |    4 |     9996 |   0.0004 |    400.91 |   444.03s |
 
 Best checkpoint in this run: `../runs/maxtile_10m/ckpt_2000000.bin` or `ckpt_3000000.bin` by 3-ply win count, both at `4/10000`. This is not a useful trained model yet.
+
+### 10M Simple Re-eval
+
+Evaluation command template:
+
+```bash
+./check_2048_rate \
+  --weights CKPT \
+  --games 1000 \
+  --depth 1 \
+  --seed 1 \
+  --report-every 1000
+```
+
+CSV output:
+
+- `/home/chakew/Projects/llm_rl_2048/runs/maxtile_10m/eval_depth1_1000_rerun.csv`
+
+Depth-1 1000-game rerun results:
+
+| Checkpoint | Games | Depth | Wins | Failures | Win rate | Avg steps | Eval time | Games/sec |
+| ---------- | ----: | ----: | ---: | -------: | -------: | --------: | --------: | --------: |
+| 1M         |  1000 |     1 |    0 |     1000 |   0.0000 |    102.07 |    0.016s |  62384.58 |
+| 2M         |  1000 |     1 |    0 |     1000 |   0.0000 |    101.81 |    0.020s |  50648.72 |
+| 3M         |  1000 |     1 |    0 |     1000 |   0.0000 |    100.75 |    0.018s |  56251.58 |
+| 4M         |  1000 |     1 |    0 |     1000 |   0.0000 |    102.83 |    0.029s |  34716.14 |
+| 5M         |  1000 |     1 |    0 |     1000 |   0.0000 |    102.33 |    0.030s |  33635.47 |
+| 6M         |  1000 |     1 |    0 |     1000 |   0.0000 |    102.57 |    0.016s |  64137.60 |
+| 7M         |  1000 |     1 |    0 |     1000 |   0.0000 |    100.70 |    0.016s |  64067.94 |
+| 8M         |  1000 |     1 |    0 |     1000 |   0.0000 |    100.93 |    0.018s |  54676.10 |
+| 9M         |  1000 |     1 |    0 |     1000 |   0.0000 |    102.21 |    0.017s |  59870.84 |
+| 10M        |  1000 |     1 |    0 |     1000 |   0.0000 |    102.10 |    0.015s |  67132.86 |
+
+Best checkpoint by wins: `/home/chakew/Projects/llm_rl_2048/runs/maxtile_10m/ckpt_4000000.bin` with `0/1000` wins, win rate `0.0000`.
+
+Conclusion: 10M 阶段仍未出现 depth-1 2048 学习信号，这与之前 sweep 一致。
 
 ## Recommendation
 
@@ -166,28 +202,28 @@ Approximate training time from checkpoint mtimes:
 Depth-1 1000-game sweep:
 
 | Checkpoint | Wins | Failures | Win rate | Avg steps |
-|---|---:|---:|---:|---:|
-| 5M | 109 | 891 | 0.109 | 827.17 |
-| 10M | 300 | 700 | 0.300 | 934.69 |
-| 15M | 519 | 481 | 0.519 | 1021.65 |
-| 20M | 784 | 216 | 0.784 | 1092.91 |
-| 25M | 886 | 114 | 0.886 | 1042.61 |
-| 30M | 943 | 57 | 0.943 | 1005.65 |
-| 35M | 980 | 20 | 0.980 | 989.76 |
-| 40M | 977 | 23 | 0.977 | 976.41 |
-| 45M | 980 | 20 | 0.980 | 971.17 |
-| 50M | 982 | 18 | 0.982 | 975.51 |
+| ---------- | ---: | -------: | -------: | --------: |
+| 5M         |  109 |      891 |    0.109 |    827.17 |
+| 10M        |  300 |      700 |    0.300 |    934.69 |
+| 15M        |  519 |      481 |    0.519 |   1021.65 |
+| 20M        |  784 |      216 |    0.784 |   1092.91 |
+| 25M        |  886 |      114 |    0.886 |   1042.61 |
+| 30M        |  943 |       57 |    0.943 |   1005.65 |
+| 35M        |  980 |       20 |    0.980 |    989.76 |
+| 40M        |  977 |       23 |    0.977 |    976.41 |
+| 45M        |  980 |       20 |    0.980 |    971.17 |
+| 50M        |  982 |       18 |    0.982 |    975.51 |
 
 Top-3 10000-game eval:
 
 | Checkpoint | Depth | Wins | Failures | Win rate | Avg steps | Eval time |
-|---|---:|---:|---:|---:|---:|---:|
-| 50M | 1 | 9832 | 168 | 0.9832 | 973.63 | 1.68s |
-| 50M | 2 | 9924 | 76 | 0.9924 | 967.22 | 85.48s |
-| 35M | 1 | 9760 | 240 | 0.9760 | 983.40 | 3.77s |
-| 35M | 2 | 9883 | 117 | 0.9883 | 973.99 | 205.71s |
-| 45M | 1 | 9765 | 235 | 0.9765 | 971.70 | 3.68s |
-| 45M | 2 | 9898 | 102 | 0.9898 | 967.25 | 199.85s |
+| ---------- | ----: | ---: | -------: | -------: | --------: | --------: |
+| 50M        |     1 | 9832 |      168 |   0.9832 |    973.63 |     1.68s |
+| 50M        |     2 | 9924 |       76 |   0.9924 |    967.22 |    85.48s |
+| 35M        |     1 | 9760 |      240 |   0.9760 |    983.40 |     3.77s |
+| 35M        |     2 | 9883 |      117 |   0.9883 |    973.99 |   205.71s |
+| 45M        |     1 | 9765 |      235 |   0.9765 |    971.70 |     3.68s |
+| 45M        |     2 | 9898 |      102 |   0.9898 |    967.25 |   199.85s |
 
 CSV outputs:
 
@@ -222,7 +258,7 @@ Recommendation:
 
 Additional code/automation change:
 
-- `gpt_version/scripts/eval_checkpoints.py` was parameterized with `--top-n`, `--quick-output`, `--final-output`, `--quick-report-every`, and `--final-report-every`.
+- `zhihu_version/scripts/eval_checkpoints.py` was parameterized with `--top-n`, `--quick-output`, `--final-output`, `--quick-report-every`, and `--final-report-every`.
 - This only changes sweep orchestration. It does not change `train_maxtile.cu`, tuple patterns, reward, TD update logic, raw weight format, or `train_score.cu`.
 
 ### 50M Summary
@@ -234,9 +270,9 @@ Best 50M checkpoint:
 10k eval:
 
 | Depth | Wins | Failures | Win rate | Avg steps | Eval time |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 9832 | 168 | 0.9832 | 973.63 | 1.68s |
-| 2 | 9924 | 76 | 0.9924 | 967.22 | 85.48s |
+| ----: | ---: | -------: | -------: | --------: | --------: |
+|     1 | 9832 |      168 |   0.9832 |    973.63 |     1.68s |
+|     2 | 9924 |       76 |   0.9924 |    967.22 |    85.48s |
 
 Depth-3 10k was attempted for the 50M checkpoint but stopped after exceeding 15 minutes. Depth-3 was deferred until later checkpoints were stronger.
 
@@ -266,39 +302,39 @@ Approximate timing from checkpoint mtimes:
 Depth-1 1000-game quick sweep:
 
 | Invocation ckpt | Cumulative est. | Wins | Failures | Win rate | Avg steps |
-|---:|---:|---:|---:|---:|---:|
-| 5M | 55M | 986 | 14 | 0.986 | 969.55 |
-| 10M | 60M | 985 | 15 | 0.985 | 967.28 |
-| 15M | 65M | 996 | 4 | 0.996 | 964.82 |
-| 20M | 70M | 995 | 5 | 0.995 | 958.91 |
-| 25M | 75M | 997 | 3 | 0.997 | 961.50 |
-| 30M | 80M | 994 | 6 | 0.994 | 958.13 |
-| 35M | 85M | 990 | 10 | 0.990 | 957.67 |
-| 40M | 90M | 994 | 6 | 0.994 | 956.18 |
-| 45M | 95M | 998 | 2 | 0.998 | 954.04 |
-| 50M | 100M | 999 | 1 | 0.999 | 954.32 |
+| --------------: | --------------: | ---: | -------: | -------: | --------: |
+|              5M |             55M |  986 |       14 |    0.986 |    969.55 |
+|             10M |             60M |  985 |       15 |    0.985 |    967.28 |
+|             15M |             65M |  996 |        4 |    0.996 |    964.82 |
+|             20M |             70M |  995 |        5 |    0.995 |    958.91 |
+|             25M |             75M |  997 |        3 |    0.997 |    961.50 |
+|             30M |             80M |  994 |        6 |    0.994 |    958.13 |
+|             35M |             85M |  990 |       10 |    0.990 |    957.67 |
+|             40M |             90M |  994 |        6 |    0.994 |    956.18 |
+|             45M |             95M |  998 |        2 |    0.998 |    954.04 |
+|             50M |            100M |  999 |        1 |    0.999 |    954.32 |
 
 Top-5 10k depth-1/depth-2 eval:
 
 | Invocation ckpt | Cumulative est. | Depth | Wins | Failures | Win rate | Avg steps | Eval time |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 50M | 100M | 1 | 9962 | 38 | 0.9962 | 954.27 | 1.26s |
-| 50M | 100M | 2 | 9993 | 7 | 0.9993 | 950.41 | 44.82s |
-| 45M | 95M | 1 | 9958 | 42 | 0.9958 | 955.44 | 1.23s |
-| 45M | 95M | 2 | 9994 | 6 | 0.9994 | 950.97 | 51.50s |
-| 25M | 75M | 1 | 9966 | 34 | 0.9966 | 959.44 | 1.24s |
-| 25M | 75M | 2 | 9991 | 9 | 0.9991 | 951.07 | 47.77s |
-| 15M | 65M | 1 | 9923 | 77 | 0.9923 | 963.88 | 1.09s |
-| 15M | 65M | 2 | 9995 | 5 | 0.9995 | 960.16 | 46.18s |
-| 20M | 70M | 1 | 9947 | 53 | 0.9947 | 961.52 | 1.06s |
-| 20M | 70M | 2 | 9991 | 9 | 0.9991 | 958.45 | 43.17s |
+| --------------: | --------------: | ----: | ---: | -------: | -------: | --------: | --------: |
+|             50M |            100M |     1 | 9962 |       38 |   0.9962 |    954.27 |     1.26s |
+|             50M |            100M |     2 | 9993 |        7 |   0.9993 |    950.41 |    44.82s |
+|             45M |             95M |     1 | 9958 |       42 |   0.9958 |    955.44 |     1.23s |
+|             45M |             95M |     2 | 9994 |        6 |   0.9994 |    950.97 |    51.50s |
+|             25M |             75M |     1 | 9966 |       34 |   0.9966 |    959.44 |     1.24s |
+|             25M |             75M |     2 | 9991 |        9 |   0.9991 |    951.07 |    47.77s |
+|             15M |             65M |     1 | 9923 |       77 |   0.9923 |    963.88 |     1.09s |
+|             15M |             65M |     2 | 9995 |        5 |   0.9995 |    960.16 |    46.18s |
+|             20M |             70M |     1 | 9947 |       53 |   0.9947 |    961.52 |     1.06s |
+|             20M |             70M |     2 | 9991 |        9 |   0.9991 |    958.45 |    43.17s |
 
 Top-2 10k depth-3 eval:
 
 | Invocation ckpt | Cumulative est. | Wins | Failures | Win rate | Avg steps | Eval time |
-|---:|---:|---:|---:|---:|---:|---:|
-| 15M | 65M | 9994 | 6 | 0.9994 | 977.06 | 1124.31s |
-| 45M | 95M | 9997 | 3 | 0.9997 | 949.05 | 1286.60s |
+| --------------: | --------------: | ---: | -------: | -------: | --------: | --------: |
+|             15M |             65M | 9994 |        6 |   0.9994 |    977.06 |  1124.31s |
+|             45M |             95M | 9997 |        3 |   0.9997 |    949.05 |  1286.60s |
 
 Decision:
 
@@ -338,42 +374,42 @@ Approximate timing from checkpoint mtimes:
 Depth-1 1000-game quick sweep:
 
 | Invocation ckpt | Cumulative est. | Wins | Failures | Win rate | Avg steps |
-|---:|---:|---:|---:|---:|---:|
-| 5M | 100M | 993 | 7 | 0.993 | 953.78 |
-| 10M | 105M | 996 | 4 | 0.996 | 954.63 |
-| 15M | 110M | 997 | 3 | 0.997 | 953.55 |
-| 20M | 115M | 997 | 3 | 0.997 | 954.08 |
-| 25M | 120M | 997 | 3 | 0.997 | 958.34 |
-| 30M | 125M | 999 | 1 | 0.999 | 954.91 |
-| 35M | 130M | 999 | 1 | 0.999 | 954.35 |
-| 40M | 135M | 993 | 7 | 0.993 | 954.56 |
-| 45M | 140M | 1000 | 0 | 1.000 | 953.37 |
-| 50M | 145M | 996 | 4 | 0.996 | 952.51 |
-| 55M | 150M | 996 | 4 | 0.996 | 955.38 |
-| 60M | 155M | 999 | 1 | 0.999 | 957.83 |
-| 65M | 160M | 997 | 3 | 0.997 | 952.18 |
+| --------------: | --------------: | ---: | -------: | -------: | --------: |
+|              5M |            100M |  993 |        7 |    0.993 |    953.78 |
+|             10M |            105M |  996 |        4 |    0.996 |    954.63 |
+|             15M |            110M |  997 |        3 |    0.997 |    953.55 |
+|             20M |            115M |  997 |        3 |    0.997 |    954.08 |
+|             25M |            120M |  997 |        3 |    0.997 |    958.34 |
+|             30M |            125M |  999 |        1 |    0.999 |    954.91 |
+|             35M |            130M |  999 |        1 |    0.999 |    954.35 |
+|             40M |            135M |  993 |        7 |    0.993 |    954.56 |
+|             45M |            140M | 1000 |        0 |    1.000 |    953.37 |
+|             50M |            145M |  996 |        4 |    0.996 |    952.51 |
+|             55M |            150M |  996 |        4 |    0.996 |    955.38 |
+|             60M |            155M |  999 |        1 |    0.999 |    957.83 |
+|             65M |            160M |  997 |        3 |    0.997 |    952.18 |
 
 Top-5 10k depth-1/depth-2 eval:
 
 | Invocation ckpt | Cumulative est. | Depth | Wins | Failures | Win rate | Avg steps | Eval time |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 45M | 140M | 1 | 9972 | 28 | 0.9972 | 953.92 | 1.11s |
-| 45M | 140M | 2 | 9994 | 6 | 0.9994 | 950.17 | 47.88s |
-| 60M | 155M | 1 | 9971 | 29 | 0.9971 | 953.98 | 1.12s |
-| 60M | 155M | 2 | 9995 | 5 | 0.9995 | 950.11 | 46.93s |
-| 30M | 125M | 1 | 9971 | 29 | 0.9971 | 954.61 | 1.15s |
-| 30M | 125M | 2 | 9995 | 5 | 0.9995 | 950.65 | 49.91s |
-| 35M | 130M | 1 | 9969 | 31 | 0.9969 | 954.44 | 1.22s |
-| 35M | 130M | 2 | 9997 | 3 | 0.9997 | 949.71 | 49.32s |
-| 15M | 110M | 1 | 9964 | 36 | 0.9964 | 954.12 | 1.13s |
-| 15M | 110M | 2 | 9998 | 2 | 0.9998 | 950.36 | 44.70s |
+| --------------: | --------------: | ----: | ---: | -------: | -------: | --------: | --------: |
+|             45M |            140M |     1 | 9972 |       28 |   0.9972 |    953.92 |     1.11s |
+|             45M |            140M |     2 | 9994 |        6 |   0.9994 |    950.17 |    47.88s |
+|             60M |            155M |     1 | 9971 |       29 |   0.9971 |    953.98 |     1.12s |
+|             60M |            155M |     2 | 9995 |        5 |   0.9995 |    950.11 |    46.93s |
+|             30M |            125M |     1 | 9971 |       29 |   0.9971 |    954.61 |     1.15s |
+|             30M |            125M |     2 | 9995 |        5 |   0.9995 |    950.65 |    49.91s |
+|             35M |            130M |     1 | 9969 |       31 |   0.9969 |    954.44 |     1.22s |
+|             35M |            130M |     2 | 9997 |        3 |   0.9997 |    949.71 |    49.32s |
+|             15M |            110M |     1 | 9964 |       36 |   0.9964 |    954.12 |     1.13s |
+|             15M |            110M |     2 | 9998 |        2 |   0.9998 |    950.36 |    44.70s |
 
 Top-2 10k depth-3 eval:
 
 | Invocation ckpt | Cumulative est. | Wins | Failures | Win rate | Avg steps | Eval time |
-|---:|---:|---:|---:|---:|---:|---:|
-| 15M | 110M | 9999 | 1 | 0.9999 | 948.32 | 864.01s |
-| 35M | 130M | 9998 | 2 | 0.9998 | 948.33 | 1078.81s |
+| --------------: | --------------: | ---: | -------: | -------: | --------: | --------: |
+|             15M |            110M | 9999 |        1 |   0.9999 |    948.32 |   864.01s |
+|             35M |            130M | 9998 |        2 |   0.9998 |    948.33 |  1078.81s |
 
 CSV outputs:
 
@@ -389,13 +425,13 @@ Global summary CSV:
 
 Top candidates by the requested priority order:
 
-| Rank | Stage | Invocation ckpt | Cumulative est. | D1 10k | D2 10k | D3 10k | Checkpoint |
-|---:|---|---:|---:|---:|---:|---:|---|
-| 1 | 160m_from100m | 15M | 110M | 0.9964 | 0.9998 | 0.9999 | `../runs/maxtile_160m_from100m/ckpt_15000000.bin` |
-| 2 | 160m_from100m | 35M | 130M | 0.9969 | 0.9997 | 0.9998 | `../runs/maxtile_160m_from100m/ckpt_35000000.bin` |
-| 3 | 100m_from50m | 15M | 65M | 0.9923 | 0.9995 | 0.9994 | `../runs/maxtile_100m_from50m/ckpt_15000000.bin` |
-| 4 | 160m_from100m | 60M | 155M | 0.9971 | 0.9995 | not run | `../runs/maxtile_160m_from100m/ckpt_60000000.bin` |
-| 5 | 160m_from100m | 30M | 125M | 0.9971 | 0.9995 | not run | `../runs/maxtile_160m_from100m/ckpt_30000000.bin` |
+| Rank | Stage         | Invocation ckpt | Cumulative est. | D1 10k | D2 10k |  D3 10k | Checkpoint                                        |
+| ---: | ------------- | --------------: | --------------: | -----: | -----: | ------: | ------------------------------------------------- |
+|    1 | 160m_from100m |             15M |            110M | 0.9964 | 0.9998 |  0.9999 | `../runs/maxtile_160m_from100m/ckpt_15000000.bin` |
+|    2 | 160m_from100m |             35M |            130M | 0.9969 | 0.9997 |  0.9998 | `../runs/maxtile_160m_from100m/ckpt_35000000.bin` |
+|    3 | 100m_from50m  |             15M |             65M | 0.9923 | 0.9995 |  0.9994 | `../runs/maxtile_100m_from50m/ckpt_15000000.bin`  |
+|    4 | 160m_from100m |             60M |            155M | 0.9971 | 0.9995 | not run | `../runs/maxtile_160m_from100m/ckpt_60000000.bin` |
+|    5 | 160m_from100m |             30M |            125M | 0.9971 | 0.9995 | not run | `../runs/maxtile_160m_from100m/ckpt_30000000.bin` |
 
 Selected global best:
 
