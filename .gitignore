@@ -1,2 +1,11 @@
-*.zip
+# *.zip
 runs/
+artifacts/
+data/sft/*.jsonl
+*.bin
+artifacts/
+data/sft/*.jsonl
+*.bin
+artifacts/
+data/sft/*.jsonl
+*.bin

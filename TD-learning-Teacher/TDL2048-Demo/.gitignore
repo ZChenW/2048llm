@@ -1,0 +1,13 @@
+# Executables and binaries
+2048
+2048.exe
+*.bin
+
+# Folders and IDE settings
+Default
+Debug
+Release
+.settings
+.*project
+.vscode
+__pycache__

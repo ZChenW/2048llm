@@ -492,3 +492,257 @@ Before doing repeated large depth-3 evaluations, consider optimizing `check_2048
 - For a stronger final claim, run 1M depth-3 once, not as a sweep.
 - If trying to improve further before 1M, resume from the global best with a lower LR such as `0.03` or `0.01` for 20M-50M, but evaluate checkpoints carefully because later checkpoints can regress.
 - Multiple seeds are also worth testing, but only after freezing the current best and preserving all CSV summaries.
+
+## Teacher Dataset Export
+
+Current TD layout note:
+
+- The old `gpt_version` directory has been moved to `TD-learning-Teacher/zhihu_version`.
+- The user-provided old best-weight path under `/home/chakew/Projects/llm_rl_2048/runs/...` no longer exists after the reorganization.
+- The equivalent migrated checkpoint used for freezing was:
+  `/home/chakew/Projects/llm_rl_2048/TD-learning-Teacher/runs/maxtile_160m_from100m/ckpt_15000000.bin`
+
+Frozen teacher artifact:
+
+- `/home/chakew/Projects/llm_rl_2048/artifacts/best_td_teacher/best_highwin_td.bin`
+- Size: `536870912` bytes
+- Source: `best_highwin_td`
+
+Exporter implementation:
+
+- Added `TD-learning-Teacher/zhihu_version/export_teacher.cpp`.
+- Reuses the Zhihu evaluator's bitboard, move LUT, tuple patterns, value function, and k-ply expectimax-style chance-node logic.
+- Scoring semantics:
+  - depth 1 uses `merge_reward + V(afterstate)`.
+  - depth 2 uses the existing `check_2048_rate.cpp` expectimax-style score on the afterstate, matching its commented-out merge-reward behavior.
+- Supports:
+  `--weights`, `--samples`, `--depth`, `--seed`, `--out`, `--max-games`,
+  `--min-max-tile`, `--hard-state-ratio`, and `--report-every`.
+- JSONL rows include:
+  `board`, `valid_moves`, `action_scores`, `action_ranking`, `teacher_action`,
+  `max_tile`, `empty_cells`, `legal_move_count`, `top1_score`, `top2_score`,
+  `score_margin`, `search_depth`, and `source`.
+- Each export also writes a sidecar summary at `<out>.summary.json`.
+- Added smoke test:
+  `TD-learning-Teacher/zhihu_version/scripts/test_export_teacher.py`.
+
+Build and smoke verification:
+
+```bash
+cd /home/chakew/Projects/llm_rl_2048/TD-learning-Teacher/zhihu_version
+python scripts/test_export_teacher.py
+g++ -O3 -std=c++17 export_teacher.cpp -o export_teacher
+./export_teacher --help
+```
+
+The C++ link step emitted the same `.sframe` warning seen previously, but exited successfully.
+
+1-ply export command:
+
+```bash
+./export_teacher \
+  --weights /home/chakew/Projects/llm_rl_2048/artifacts/best_td_teacher/best_highwin_td.bin \
+  --samples 100000 \
+  --depth 1 \
+  --seed 101 \
+  --out /home/chakew/Projects/llm_rl_2048/data/teacher_1ply_100k.jsonl \
+  --max-games 2000 \
+  --min-max-tile 128 \
+  --hard-state-ratio 0.35 \
+  --report-every 10000
+```
+
+1-ply output:
+
+- JSONL: `/home/chakew/Projects/llm_rl_2048/data/teacher_1ply_100k.jsonl`
+- Summary: `/home/chakew/Projects/llm_rl_2048/data/teacher_1ply_100k.jsonl.summary.json`
+- Count: `100000`
+- Games scanned: `31`
+- Hard/ambiguous count: `96393` (`0.96393`)
+- Max-tile histogram: `128:2097`, `256:4916`, `512:5356`, `1024:14602`, `2048:38218`, `4096:34811`
+- Empty-cells histogram: `0:1479`, `1:6054`, `2:14543`, `3:22723`, `4:22980`, `5:17341`, `6:9969`, `7:3770`, `8:959`, `9:151`, `10:29`, `11:2`
+- Legal-move-count histogram: `1:41`, `2:7331`, `3:32178`, `4:60450`
+- Action distribution: `up:23378`, `down:26385`, `left:26428`, `right:23809`
+- Score-margin distribution: `0:64`, `(0,0.001):28`, `[0.001,0.01):113`, `[0.01,0.1):1087`, `[0.1,1):9678`, `[1,10):38726`, `[10,100):35279`, `[100,1000):9186`, `>=1000:5839`
+
+2-ply export command:
+
+```bash
+./export_teacher \
+  --weights /home/chakew/Projects/llm_rl_2048/artifacts/best_td_teacher/best_highwin_td.bin \
+  --samples 50000 \
+  --depth 2 \
+  --seed 202 \
+  --out /home/chakew/Projects/llm_rl_2048/data/teacher_2ply_50k.jsonl \
+  --max-games 2000 \
+  --min-max-tile 128 \
+  --hard-state-ratio 0.35 \
+  --report-every 5000
+```
+
+2-ply output:
+
+- JSONL: `/home/chakew/Projects/llm_rl_2048/data/teacher_2ply_50k.jsonl`
+- Summary: `/home/chakew/Projects/llm_rl_2048/data/teacher_2ply_50k.jsonl.summary.json`
+- Count: `50000`
+- Games scanned: `16`
+- Hard/ambiguous count: `40530` (`0.8106`)
+- Max-tile histogram: `128:946`, `256:2613`, `512:1804`, `1024:6037`, `2048:18790`, `4096:19810`
+- Empty-cells histogram: `0:912`, `1:3688`, `2:9268`, `3:14063`, `4:11825`, `5:5805`, `6:3132`, `7:1054`, `8:225`, `9:26`, `10:1`, `11:1`
+- Legal-move-count histogram: `1:2`, `2:2647`, `3:15508`, `4:31843`
+- Action distribution: `up:12688`, `down:11036`, `left:12803`, `right:13473`
+- Score-margin distribution: `0:20`, `(0,0.001):32`, `[0.001,0.01):251`, `[0.01,0.1):2367`, `[0.1,1):15790`, `[1,10):21923`, `[10,100):6111`, `[100,1000):2517`, `>=1000:989`
+
+Notes:
+
+- No TD training was run.
+- No 1M eval was run.
+- No LLM SFT/RL was started.
+- `train_maxtile.cu` was not modified.
+
+## SFT Data Preparation
+
+Added scripts:
+
+- `/home/chakew/Projects/llm_rl_2048/scripts/validate_teacher_dataset.py`
+  validates teacher JSONL schema, board invariants, legal moves, full
+  `action_scores`, full `action_ranking`, top score fields, and prints dataset
+  histograms.
+- `/home/chakew/Projects/llm_rl_2048/scripts/convert_teacher_to_sft.py`
+  converts teacher JSONL into chat-style SFT JSONL for `best_action` or
+  `action_ranking`, with `raw_move` or `answer_tag` assistant outputs.
+- `/home/chakew/Projects/llm_rl_2048/scripts/test_sft_data_pipeline.py`
+  builds a temporary teacher JSONL, validates it, converts all four task/format
+  combinations, and checks output counts and assistant formats.
+
+During strict validation, the previously exported teacher JSONL files exposed a
+schema bug: rows with illegal moves used compact `action_scores` and
+`action_ranking` fields instead of all four actions. No TD training or model
+export was rerun. The existing JSONL files were schema-normalized in place by
+preserving legal action scores, adding `null` for illegal actions, and appending
+illegal actions to `action_ranking`.
+
+Validation command:
+
+```bash
+python3 scripts/validate_teacher_dataset.py \
+  --input data/teacher_1ply_100k.jsonl \
+  --input data/teacher_2ply_50k.jsonl \
+  --strict
+```
+
+Validation result:
+
+- Total rows: `150000`
+- Valid rows: `150000`
+- Invalid rows: `0`
+- Action distribution: `down:37421`, `left:39231`, `right:37282`, `up:36066`
+- Max-tile histogram: `128:3043`, `256:7529`, `512:7160`, `1024:20639`,
+  `2048:57008`, `4096:54621`
+- Empty-cells histogram: `0:2391`, `1:9742`, `2:23811`, `3:36786`,
+  `4:34805`, `5:23146`, `6:13101`, `7:4824`, `8:1184`, `9:177`, `10:30`,
+  `11:3`
+- Legal-move-count histogram: `1:43`, `2:9978`, `3:47686`, `4:92293`
+- Search-depth histogram: `1:100000`, `2:50000`
+
+Conversion commands:
+
+```bash
+python3 scripts/convert_teacher_to_sft.py \
+  --input data/teacher_1ply_100k.jsonl \
+  --input data/teacher_2ply_50k.jsonl \
+  --out-dir data/sft \
+  --task best_action \
+  --format raw_move \
+  --val-ratio 0.05 \
+  --seed 42
+
+python3 scripts/convert_teacher_to_sft.py \
+  --input data/teacher_1ply_100k.jsonl \
+  --input data/teacher_2ply_50k.jsonl \
+  --out-dir data/sft \
+  --task best_action \
+  --format answer_tag \
+  --val-ratio 0.05 \
+  --seed 42
+
+python3 scripts/convert_teacher_to_sft.py \
+  --input data/teacher_1ply_100k.jsonl \
+  --input data/teacher_2ply_50k.jsonl \
+  --out-dir data/sft \
+  --task action_ranking \
+  --format raw_move \
+  --val-ratio 0.05 \
+  --seed 42
+
+python3 scripts/convert_teacher_to_sft.py \
+  --input data/teacher_1ply_100k.jsonl \
+  --input data/teacher_2ply_50k.jsonl \
+  --out-dir data/sft \
+  --task action_ranking \
+  --format answer_tag \
+  --val-ratio 0.05 \
+  --seed 42
+```
+
+Generated SFT files:
+
+- `/home/chakew/Projects/llm_rl_2048/data/sft/best_action_raw_move_train.jsonl`:
+  `142500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/best_action_raw_move_val.jsonl`:
+  `7500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/best_action_answer_tag_train.jsonl`:
+  `142500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/best_action_answer_tag_val.jsonl`:
+  `7500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/action_ranking_raw_move_train.jsonl`:
+  `142500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/action_ranking_raw_move_val.jsonl`:
+  `7500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/action_ranking_answer_tag_train.jsonl`:
+  `142500` rows
+- `/home/chakew/Projects/llm_rl_2048/data/sft/action_ranking_answer_tag_val.jsonl`:
+  `7500` rows
+
+Each conversion also wrote a summary JSON:
+
+- `/home/chakew/Projects/llm_rl_2048/data/sft/best_action_raw_move_summary.json`
+- `/home/chakew/Projects/llm_rl_2048/data/sft/best_action_answer_tag_summary.json`
+- `/home/chakew/Projects/llm_rl_2048/data/sft/action_ranking_raw_move_summary.json`
+- `/home/chakew/Projects/llm_rl_2048/data/sft/action_ranking_answer_tag_summary.json`
+
+All four SFT datasets use the same source distribution:
+
+- Used rows: `150000`
+- Train rows: `142500`
+- Val rows: `7500`
+- Action distribution: `down:37421`, `left:39231`, `right:37282`, `up:36066`
+- Max-tile histogram: `128:3043`, `256:7529`, `512:7160`, `1024:20639`,
+  `2048:57008`, `4096:54621`
+- Empty-cells histogram: `0:2391`, `1:9742`, `2:23811`, `3:36786`,
+  `4:34805`, `5:23146`, `6:13101`, `7:4824`, `8:1184`, `9:177`, `10:30`,
+  `11:3`
+- Search-depth histogram: `1:100000`, `2:50000`
+
+Verification:
+
+```bash
+python3 scripts/test_sft_data_pipeline.py
+wc -l data/sft/best_action_raw_move_train.jsonl \
+  data/sft/best_action_raw_move_val.jsonl \
+  data/sft/best_action_answer_tag_train.jsonl \
+  data/sft/best_action_answer_tag_val.jsonl \
+  data/sft/action_ranking_raw_move_train.jsonl \
+  data/sft/action_ranking_raw_move_val.jsonl \
+  data/sft/action_ranking_answer_tag_train.jsonl \
+  data/sft/action_ranking_answer_tag_val.jsonl
+```
+
+Recommended first SFT baseline:
+
+- Primary: `best_action + raw_move`
+- Secondary: `best_action + answer_tag`
+- Do not use `<think>` for this phase.
+
+No LLM training, RL training, TD training, 1M eval, or `train_maxtile.cu`
+changes were performed in this phase.

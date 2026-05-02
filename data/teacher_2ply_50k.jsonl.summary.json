@@ -1,0 +1,16 @@
+{
+  "count": 50000,
+  "games_seen": 16,
+  "search_depth": 2,
+  "seed": 202,
+  "weights": "/home/chakew/Projects/llm_rl_2048/artifacts/best_td_teacher/best_highwin_td.bin",
+  "source": "best_highwin_td",
+  "hard_count": 40530,
+  "hard_ratio": 0.8106,
+  "elapsed_seconds": 1.50552082,
+  "max_tile_histogram": {"128":946,"256":2613,"512":1804,"1024":6037,"2048":18790,"4096":19810},
+  "empty_cells_histogram": {"0":912,"1":3688,"2":9268,"3":14063,"4":11825,"5":5805,"6":3132,"7":1054,"8":225,"9":26,"10":1,"11":1},
+  "legal_move_count_histogram": {"1":2,"2":2647,"3":15508,"4":31843},
+  "action_distribution": {"down":11036,"left":12803,"right":13473,"up":12688},
+  "score_margin_distribution": {"(0,0.001)":32,"0":20,">=1000":989,"[0.001,0.01)":251,"[0.01,0.1)":2367,"[0.1,1)":15790,"[1,10)":21923,"[10,100)":6111,"[100,1000)":2517}
+}
