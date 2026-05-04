@@ -9,3 +9,4 @@ data/sft/*.jsonl
 artifacts/
 data/sft/*.jsonl
 *.bin
+data/sft_focused/*.jsonl
