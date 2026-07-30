@@ -176,7 +176,6 @@ def _run(
         gradient_accumulation_steps=1,
         num_generations=config.rollout.group_size,
         generation_batch_size=config.rollout.group_size,
-        max_prompt_length=256,
         max_completion_length=(
             config.rollout.horizon * config.rollout.max_completion_tokens
         ),
