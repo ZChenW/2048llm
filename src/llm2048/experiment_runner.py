@@ -15,9 +15,11 @@ import sys
 import time
 from typing import Any, Sequence
 
+from llm2048.game import Game2048
 from llm2048.policy_contracts import (
     ACTIONS,
     ACTION_ENVELOPE,
+    Action,
     REASONING_ENVELOPE,
     REASONING_MAX_GENERATION_TOKENS,
     PolicyVariant,
@@ -47,6 +49,41 @@ class PolicyFixtureCase:
             "response": self.response,
             "response_length_tokens": self.response_length_tokens,
             "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
+class EnvironmentPolicyResponse:
+    response: str
+    response_length_tokens: int
+    truncated: bool
+
+    def resolved(self) -> dict[str, Any]:
+        return {
+            "response": self.response,
+            "response_length_tokens": self.response_length_tokens,
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
+class EnvironmentGameFixture:
+    variant: PolicyVariant
+    responses: list[EnvironmentPolicyResponse] | None
+    action_preferences: tuple[Action, ...] | None
+
+    def resolved(self) -> dict[str, Any]:
+        return {
+            "variant": self.variant,
+            **(
+                {
+                    "responses": [
+                        response.resolved() for response in self.responses
+                    ]
+                }
+                if self.responses is not None
+                else {"action_preferences": self.action_preferences}
+            ),
         }
 
 
@@ -134,6 +171,87 @@ def _load_policy_cases(
     return cases
 
 
+def _load_environment_game(
+    raw_game: Any,
+    total_steps: int,
+) -> EnvironmentGameFixture:
+    if not isinstance(raw_game, dict):
+        raise ConfigurationError("fixture.environment_game must be an object")
+    variant = raw_game.get("variant")
+    if variant not in ("direct_action", "reasoning"):
+        raise ConfigurationError(
+            "fixture.environment_game.variant must be "
+            "'direct_action' or 'reasoning'"
+        )
+    raw_responses = raw_game.get("responses")
+    raw_preferences = raw_game.get("action_preferences")
+    if raw_responses is not None and raw_preferences is not None:
+        raise ConfigurationError(
+            "fixture.environment_game must define responses or "
+            "action_preferences, not both"
+        )
+    if raw_preferences is not None:
+        if (
+            variant != "direct_action"
+            or not isinstance(raw_preferences, list)
+            or len(raw_preferences) != 4
+            or set(raw_preferences) != ACTIONS
+        ):
+            raise ConfigurationError(
+                "fixture.environment_game.action_preferences must contain "
+                "LEFT, RIGHT, UP, and DOWN once for a Direct-action Policy"
+            )
+        return EnvironmentGameFixture(
+            variant=variant,
+            responses=None,
+            action_preferences=tuple(raw_preferences),
+        )
+    if not isinstance(raw_responses, list) or len(raw_responses) != total_steps:
+        raise ConfigurationError(
+            "fixture.environment_game.responses must contain one object per step"
+        )
+    responses: list[EnvironmentPolicyResponse] = []
+    for index, raw_response in enumerate(raw_responses):
+        field = f"fixture.environment_game.responses[{index}]"
+        if not isinstance(raw_response, dict):
+            raise ConfigurationError(f"{field} must be an object")
+        response = raw_response.get("response")
+        if not isinstance(response, str):
+            raise ConfigurationError(f"{field}.response must be a string")
+        response_length_tokens = raw_response.get("response_length_tokens")
+        if (
+            not isinstance(response_length_tokens, int)
+            or isinstance(response_length_tokens, bool)
+            or response_length_tokens < 0
+        ):
+            raise ConfigurationError(
+                f"{field}.response_length_tokens must be a non-negative integer"
+            )
+        if (
+            variant == "reasoning"
+            and response_length_tokens > REASONING_MAX_GENERATION_TOKENS
+        ):
+            raise ConfigurationError(
+                f"{field}.response_length_tokens must not exceed "
+                f"{REASONING_MAX_GENERATION_TOKENS} for a Reasoning Policy"
+            )
+        truncated = raw_response.get("truncated")
+        if not isinstance(truncated, bool):
+            raise ConfigurationError(f"{field}.truncated must be a boolean")
+        responses.append(
+            EnvironmentPolicyResponse(
+                response=response,
+                response_length_tokens=response_length_tokens,
+                truncated=truncated,
+            )
+        )
+    return EnvironmentGameFixture(
+        variant=variant,
+        responses=responses,
+        action_preferences=None,
+    )
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     schema_version: int
@@ -143,6 +261,7 @@ class ExperimentConfig:
     board: list[list[int]] | None
     policy_actions: list[str] | None
     policy_cases: list[PolicyFixtureCase] | None
+    environment_game: EnvironmentGameFixture | None
     rewards: list[float]
     wandb_project: str
 
@@ -192,12 +311,23 @@ class ExperimentConfig:
             raise ConfigurationError("fixture must be an object")
 
         total_steps = raw["total_steps"]
+        environment_game_raw = fixture.get("environment_game")
         policy_cases_raw = fixture.get("policy_cases")
-        if policy_cases_raw is not None:
+        if environment_game_raw is not None:
+            environment_game = _load_environment_game(
+                environment_game_raw,
+                total_steps,
+            )
+            policy_cases = None
+            board = None
+            policy_actions = None
+        elif policy_cases_raw is not None:
+            environment_game = None
             policy_cases = _load_policy_cases(policy_cases_raw, total_steps)
             board = None
             policy_actions = None
         else:
+            environment_game = None
             policy_cases = None
             board = _validate_board(fixture.get("board"), "fixture.board")
             policy_actions = fixture.get("policy_actions")
@@ -224,7 +354,9 @@ class ExperimentConfig:
                 )
 
         rewards = fixture.get("rewards")
-        if rewards is None and policy_cases is not None:
+        if rewards is None and (
+            policy_cases is not None or environment_game is not None
+        ):
             rewards = [0.0] * total_steps
         if (
             not isinstance(rewards, list)
@@ -254,6 +386,7 @@ class ExperimentConfig:
                 board=board,
                 policy_actions=policy_actions,
                 policy_cases=policy_cases,
+                environment_game=environment_game,
                 rewards=[float(reward) for reward in rewards],
                 wandb_project=wandb_project,
             ),
@@ -261,8 +394,14 @@ class ExperimentConfig:
         )
 
     def resolved(self) -> dict[str, Any]:
-        if self.policy_cases is None:
-            fixture: dict[str, Any] = {
+        fixture: dict[str, Any]
+        if self.environment_game is not None:
+            fixture = {
+                "environment_game": self.environment_game.resolved(),
+                "rewards": self.rewards,
+            }
+        elif self.policy_cases is None:
+            fixture = {
                 "board": self.board,
                 "policy_actions": self.policy_actions,
                 "rewards": self.rewards,
@@ -294,7 +433,10 @@ class ExperimentConfig:
                         ),
                     }
                 }
-                if self.policy_cases is not None
+                if (
+                    self.policy_cases is not None
+                    or self.environment_game is not None
+                )
                 else {}
             ),
         }
@@ -567,6 +709,89 @@ def _policy_metrics(events_path: Path) -> dict[str, dict[str, float | int]]:
     return metrics
 
 
+def _game_summary(
+    game: Game2048,
+    termination_reason: str,
+    policy_failure: bool,
+) -> dict[str, Any]:
+    tiles = [tile for row in game.board for tile in row if tile != 0]
+    histogram = {
+        str(value): tiles.count(value)
+        for value in sorted(set(tiles))
+    }
+    return {
+        "2048_success": max(tiles) >= 2048,
+        "empty_cells": 16 - len(tiles),
+        "maximum_tile": max(tiles),
+        "moves": game.moves,
+        "policy_failure": policy_failure,
+        "score": game.score,
+        "termination_reason": termination_reason,
+        "tile_histogram": histogram,
+    }
+
+
+def _environment_response(
+    fixture: EnvironmentGameFixture,
+    board: Sequence[Sequence[int]],
+    zero_based_step: int,
+) -> EnvironmentPolicyResponse:
+    if fixture.responses is not None:
+        return fixture.responses[zero_based_step]
+    if fixture.action_preferences is None:
+        raise RuntimeError("environment game policy script is missing")
+    change_actions = set(change_making_actions(board))
+    action = next(
+        (
+            preference
+            for preference in fixture.action_preferences
+            if preference in change_actions
+        ),
+        None,
+    )
+    if action is None:
+        raise RuntimeError("scripted policy was invoked after game over")
+    return EnvironmentPolicyResponse(
+        response=f"<action>{action}</action>",
+        response_length_tokens=3,
+        truncated=False,
+    )
+
+
+def _replay_environment_prefix(
+    config: ExperimentConfig,
+    completed_steps: int,
+) -> Game2048:
+    if config.environment_game is None:
+        raise RuntimeError("environment game fixture is missing")
+    game = Game2048(config.seed)
+    for zero_based_step in range(completed_steps):
+        response = _environment_response(
+            config.environment_game,
+            game.board,
+            zero_based_step,
+        )
+        contract = enforce_policy_response(
+            variant=config.environment_game.variant,
+            response=response.response,
+            truncated=response.truncated,
+            board_change_actions=change_making_actions(game.board),
+        )
+        if contract.policy_failure or contract.action is None:
+            raise ConfigurationError(
+                "checkpoint continues beyond a terminated environment game"
+            )
+        game.move(contract.action)
+        if (
+            max(tile for row in game.board for tile in row) >= 2048
+            or not change_making_actions(game.board)
+        ) and zero_based_step + 1 < completed_steps:
+            raise ConfigurationError(
+                "checkpoint continues beyond a terminated environment game"
+            )
+    return game
+
+
 def run_experiment(
     config_path: Path,
     output_directory: Path,
@@ -582,6 +807,7 @@ def run_experiment(
     result_path = output_directory / "result.json"
     invocations_path = output_directory / "invocations.jsonl"
 
+    checkpoint: dict[str, Any] | None = None
     if resume_path is None:
         if events_path.exists() or checkpoint_path.exists():
             raise ConfigurationError(
@@ -603,6 +829,29 @@ def run_experiment(
                 "checkpoint completed_steps does not match the event history"
             )
 
+    game: Game2048 | None = None
+    if config.environment_game is not None:
+        if checkpoint is None:
+            game = Game2048(config.seed)
+        else:
+            snapshot = checkpoint.get("game_snapshot")
+            if not isinstance(snapshot, dict):
+                raise ConfigurationError(
+                    "environment game checkpoint is missing game_snapshot"
+                )
+            try:
+                game = Game2048.from_snapshot(snapshot)
+            except ValueError as error:
+                raise ConfigurationError(str(error)) from error
+            replayed_game = _replay_environment_prefix(config, completed_steps)
+            restored_snapshot = json.loads(json.dumps(game.snapshot()))
+            replayed_snapshot = json.loads(json.dumps(replayed_game.snapshot()))
+            if restored_snapshot != replayed_snapshot:
+                raise ConfigurationError(
+                    "checkpoint game_snapshot does not match the seeded "
+                    "response history"
+                )
+
     target_step = config.total_steps
     if stop_after_step is not None:
         if stop_after_step <= completed_steps or stop_after_step > config.total_steps:
@@ -613,13 +862,73 @@ def run_experiment(
         target_step = stop_after_step
 
     start_step = completed_steps
+    termination_reason: str | None = None
+    policy_failure = False
     telemetry = Telemetry(output_directory, config, experiment_id)
     try:
         for zero_based_step in range(completed_steps, target_step):
             step = zero_based_step + 1
             reward = config.rewards[zero_based_step]
             reward_total += reward
-            if config.policy_cases is None:
+            response_length_tokens: int | None = None
+            event: dict[str, Any]
+            if game is not None:
+                if config.environment_game is None:
+                    raise RuntimeError("environment game fixture is missing")
+                response = _environment_response(
+                    config.environment_game,
+                    game.board,
+                    zero_based_step,
+                )
+                board = [row[:] for row in game.board]
+                board_change_actions = change_making_actions(board)
+                contract = enforce_policy_response(
+                    variant=config.environment_game.variant,
+                    response=response.response,
+                    truncated=response.truncated,
+                    board_change_actions=board_change_actions,
+                )
+                event = {
+                    "action": contract.action,
+                    "board": board,
+                    "board_after_move": None,
+                    "next_board": board,
+                    "parsed": contract.parsed,
+                    "policy_failure": contract.policy_failure,
+                    "policy_failure_reason": contract.policy_failure_reason,
+                    "policy_reasoning_trace": contract.policy_reasoning_trace,
+                    "prompt": build_policy_prompt(
+                        config.environment_game.variant,
+                        board,
+                    ),
+                    "response": response.response,
+                    "response_length_tokens": response.response_length_tokens,
+                    "reward": reward,
+                    "reward_total": reward_total,
+                    "score_delta": 0,
+                    "spawned_tile": None,
+                    "step": step,
+                    "truncated": response.truncated,
+                    "valid_action": contract.valid_action,
+                    "variant": config.environment_game.variant,
+                }
+                response_length_tokens = response.response_length_tokens
+                if contract.policy_failure:
+                    termination_reason = "policy_failure"
+                    policy_failure = True
+                else:
+                    if contract.action is None:
+                        raise RuntimeError("valid policy response has no action")
+                    outcome = game.move(contract.action)
+                    event["board_after_move"] = outcome.board_after_move
+                    event["next_board"] = outcome.next_board
+                    event["score_delta"] = outcome.score_delta
+                    event["spawned_tile"] = outcome.spawned_tile.resolved()
+                    if max(tile for row in game.board for tile in row) >= 2048:
+                        termination_reason = "2048_success"
+                    elif not change_making_actions(game.board):
+                        termination_reason = "game_over"
+            elif config.policy_cases is None:
                 if config.policy_actions is None or config.board is None:
                     raise RuntimeError("legacy fixture is missing policy inputs")
                 event = {
@@ -637,13 +946,16 @@ def run_experiment(
                     reward_total=reward_total,
                     step=step,
                 )
+                response_length_tokens = case.response_length_tokens
             _append_json_line(events_path, event)
-            if config.policy_cases is None:
+            if config.policy_cases is None and game is None:
                 telemetry.log_training(step, reward, reward_total)
             else:
+                if response_length_tokens is None:
+                    raise RuntimeError("policy response length is missing")
                 telemetry.log_policy_training(
                     step,
-                    case.variant,
+                    event["variant"],
                     reward=reward,
                     reward_total=reward_total,
                     parsed=bool(event["parsed"]),
@@ -653,7 +965,7 @@ def run_experiment(
                     ),
                     valid_action=bool(event["valid_action"]),
                     policy_failure=bool(event["policy_failure"]),
-                    response_length_tokens=case.response_length_tokens,
+                    response_length_tokens=response_length_tokens,
                 )
             completed_steps = step
             _write_json(
@@ -661,16 +973,33 @@ def run_experiment(
                 {
                     "completed_steps": completed_steps,
                     "experiment_id": experiment_id,
+                    **(
+                        {"game_snapshot": game.snapshot()}
+                        if game is not None
+                        else {}
+                    ),
                     "reward_total": reward_total,
                     "schema_version": 1,
                 },
             )
+            if termination_reason is not None:
+                break
         if completed_steps == config.total_steps:
             telemetry.log_evaluation(completed_steps, reward_total / completed_steps)
     finally:
         wandb_directory, tensorboard_directory = telemetry.close()
 
-    status = "completed" if completed_steps == config.total_steps else "paused"
+    if (
+        game is not None
+        and termination_reason is None
+        and completed_steps == config.total_steps
+    ):
+        termination_reason = "script_exhausted"
+    status = (
+        "completed"
+        if completed_steps == config.total_steps or termination_reason is not None
+        else "paused"
+    )
     result = {
         "completed_steps": completed_steps,
         "metrics": {
@@ -679,8 +1008,16 @@ def run_experiment(
         },
         "status": status,
     }
-    if config.policy_cases is not None:
+    if config.policy_cases is not None or game is not None:
         result["policy_metrics"] = _policy_metrics(events_path)
+    if game is not None:
+        if termination_reason is None:
+            termination_reason = "paused"
+        result["game"] = _game_summary(
+            game,
+            termination_reason,
+            policy_failure,
+        )
     _write_json(result_path, result)
     _append_json_line(
         invocations_path,

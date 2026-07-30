@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from typing import Any
 import unittest
 
 
@@ -15,6 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "experiment_runner_tracer.json"
 POLICY_CONTRACT_FIXTURE = (
     REPO_ROOT / "tests" / "fixtures" / "policy_response_contracts.json"
+)
+ENVIRONMENT_GAME_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "environment_game_seeded.json"
+)
+COMPLETE_ENVIRONMENT_GAME_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "environment_game_complete.json"
 )
 FIXTURE_BOARD = [
     [0, 0, 0, 0],
@@ -732,6 +739,604 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             self.assertEqual(
                 events[-1]["change_making_actions"],
                 [],
+            )
+
+    def test_seeded_environment_game_moves_merges_scores_and_spawns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+
+            completed = self.run_runner(
+                "--config",
+                str(ENVIRONMENT_GAME_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(
+                [
+                    {
+                        "action": event["action"],
+                        "board": event["board"],
+                        "board_after_move": event["board_after_move"],
+                        "next_board": event["next_board"],
+                        "score_delta": event["score_delta"],
+                        "spawned_tile": event["spawned_tile"],
+                    }
+                    for event in events
+                ],
+                [
+                    {
+                        "action": "LEFT",
+                        "board": [
+                            [0, 0, 0, 0],
+                            [0, 0, 2, 0],
+                            [0, 0, 4, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "board_after_move": [
+                            [0, 0, 0, 0],
+                            [2, 0, 0, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "next_board": [
+                            [0, 2, 0, 0],
+                            [2, 0, 0, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "score_delta": 0,
+                        "spawned_tile": {"column": 1, "row": 0, "value": 2},
+                    },
+                    {
+                        "action": "UP",
+                        "board": [
+                            [0, 2, 0, 0],
+                            [2, 0, 0, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "board_after_move": [
+                            [2, 2, 0, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "next_board": [
+                            [2, 2, 0, 2],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "score_delta": 0,
+                        "spawned_tile": {"column": 3, "row": 0, "value": 2},
+                    },
+                    {
+                        "action": "LEFT",
+                        "board": [
+                            [2, 2, 0, 2],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "board_after_move": [
+                            [4, 2, 0, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "next_board": [
+                            [4, 2, 4, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "score_delta": 4,
+                        "spawned_tile": {"column": 2, "row": 0, "value": 4},
+                    },
+                    {
+                        "action": "UP",
+                        "board": [
+                            [4, 2, 4, 0],
+                            [4, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "board_after_move": [
+                            [8, 2, 4, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "next_board": [
+                            [8, 2, 4, 0],
+                            [0, 0, 2, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ],
+                        "score_delta": 8,
+                        "spawned_tile": {"column": 2, "row": 1, "value": 2},
+                    },
+                ],
+            )
+            for event in events:
+                compact_board = json.dumps(event["board"], separators=(",", ":"))
+                self.assertEqual(event["prompt"].count(compact_board), 1)
+                for prohibited in (
+                    "legal",
+                    "rng",
+                    "score",
+                    "history",
+                    "prior",
+                    "teacher",
+                ):
+                    self.assertNotIn(prohibited, event["prompt"].lower())
+
+            result = json.loads((output_directory / "result.json").read_text())
+            self.assertEqual(
+                result["game"],
+                {
+                    "2048_success": False,
+                    "empty_cells": 12,
+                    "maximum_tile": 8,
+                    "moves": 4,
+                    "policy_failure": False,
+                    "score": 12,
+                    "termination_reason": "script_exhausted",
+                    "tile_histogram": {"2": 2, "4": 1, "8": 1},
+                },
+            )
+
+    def test_environment_snapshot_resumes_the_identical_rng_trajectory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            uninterrupted_directory = root / "uninterrupted"
+            resumed_directory = root / "resumed"
+
+            uninterrupted = self.run_runner(
+                "--config",
+                str(ENVIRONMENT_GAME_FIXTURE),
+                "--output-dir",
+                str(uninterrupted_directory),
+            )
+            self.assertEqual(uninterrupted.returncode, 0, uninterrupted.stderr)
+
+            paused = self.run_runner(
+                "--config",
+                str(ENVIRONMENT_GAME_FIXTURE),
+                "--output-dir",
+                str(resumed_directory),
+                "--stop-after-step",
+                "2",
+            )
+            self.assertEqual(paused.returncode, 0, paused.stderr)
+            checkpoint_path = resumed_directory / "checkpoints" / "latest.json"
+            snapshot = json.loads(checkpoint_path.read_text())["game_snapshot"]
+            self.assertEqual(
+                snapshot["board"],
+                [
+                    [2, 2, 0, 2],
+                    [4, 0, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                ],
+            )
+            self.assertEqual(snapshot["score"], 0)
+            self.assertEqual(snapshot["moves"], 2)
+            self.assertIsInstance(snapshot["rng_state"], list)
+            self.assertEqual(len(snapshot["rng_state"]), 3)
+
+            resumed = self.run_runner(
+                "--config",
+                str(ENVIRONMENT_GAME_FIXTURE),
+                "--output-dir",
+                str(resumed_directory),
+                "--resume",
+                str(checkpoint_path),
+            )
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+
+            for relative_path in (
+                Path("events.jsonl"),
+                Path("result.json"),
+                Path("checkpoints/latest.json"),
+            ):
+                self.assertEqual(
+                    (resumed_directory / relative_path).read_bytes(),
+                    (uninterrupted_directory / relative_path).read_bytes(),
+                    relative_path,
+                )
+
+    def test_environment_resume_rejects_a_snapshot_not_reached_by_the_script(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+            paused = self.run_runner(
+                "--config",
+                str(ENVIRONMENT_GAME_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+                "--stop-after-step",
+                "2",
+            )
+            self.assertEqual(paused.returncode, 0, paused.stderr)
+            checkpoint_path = output_directory / "checkpoints" / "latest.json"
+            checkpoint = json.loads(checkpoint_path.read_text())
+            checkpoint["game_snapshot"]["board"][0][0] = 4
+            checkpoint_path.write_text(json.dumps(checkpoint))
+
+            resumed = self.run_runner(
+                "--config",
+                str(ENVIRONMENT_GAME_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+                "--resume",
+                str(checkpoint_path),
+            )
+
+            self.assertEqual(resumed.returncode, 2)
+            self.assertIn(
+                "game_snapshot does not match the seeded response history",
+                resumed.stderr,
+            )
+
+    def test_environment_policy_failures_terminate_without_retry_or_replacement(
+        self,
+    ) -> None:
+        cases: dict[str, dict[str, Any]] = {
+            "malformed": {
+                "responses": [
+                    {
+                        "response": "<action>LEFT</action> extra",
+                        "response_length_tokens": 4,
+                        "truncated": False,
+                    },
+                    {
+                        "response": "<action>LEFT</action>",
+                        "response_length_tokens": 3,
+                        "truncated": False,
+                    },
+                ],
+                "expected_events": 1,
+                "expected_moves": 0,
+                "expected_reason": "malformed_response",
+            },
+            "truncated": {
+                "responses": [
+                    {
+                        "response": "<action>LEFT",
+                        "response_length_tokens": 2,
+                        "truncated": True,
+                    },
+                    {
+                        "response": "<action>LEFT</action>",
+                        "response_length_tokens": 3,
+                        "truncated": False,
+                    },
+                ],
+                "expected_events": 1,
+                "expected_moves": 0,
+                "expected_reason": "truncated_response",
+            },
+            "illegal": {
+                "responses": [
+                    {
+                        "response": f"<action>{action}</action>",
+                        "response_length_tokens": 3,
+                        "truncated": False,
+                    }
+                    for action in ("LEFT", "UP", "LEFT", "LEFT", "DOWN")
+                ],
+                "expected_events": 4,
+                "expected_moves": 3,
+                "expected_reason": "illegal_action",
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for name, case in cases.items():
+                with self.subTest(name=name):
+                    config_path = root / f"{name}.json"
+                    output_directory = root / name
+                    responses = case["responses"]
+                    config_path.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "experiment_name": f"policy-failure-{name}",
+                                "seed": 7,
+                                "total_steps": len(responses),
+                                "fixture": {
+                                    "environment_game": {
+                                        "variant": "direct_action",
+                                        "responses": responses,
+                                    }
+                                },
+                                "telemetry": {
+                                    "wandb_project": "2048llm-fixture"
+                                },
+                            }
+                        )
+                    )
+
+                    completed = self.run_runner(
+                        "--config",
+                        str(config_path),
+                        "--output-dir",
+                        str(output_directory),
+                    )
+
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    events = [
+                        json.loads(line)
+                        for line in (output_directory / "events.jsonl")
+                        .read_text()
+                        .splitlines()
+                    ]
+                    self.assertEqual(len(events), case["expected_events"])
+                    self.assertEqual(
+                        events[-1]["policy_failure_reason"],
+                        case["expected_reason"],
+                    )
+                    self.assertTrue(events[-1]["policy_failure"])
+                    result = json.loads(
+                        (output_directory / "result.json").read_text()
+                    )
+                    self.assertEqual(
+                        result["completed_steps"],
+                        case["expected_events"],
+                    )
+                    self.assertEqual(
+                        result["game"]["moves"],
+                        case["expected_moves"],
+                    )
+                    self.assertTrue(result["game"]["policy_failure"])
+                    self.assertEqual(
+                        result["game"]["termination_reason"],
+                        "policy_failure",
+                    )
+
+    def test_complete_strict_markov_policy_game_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first_directory = root / "first"
+            second_directory = root / "second"
+
+            for output_directory in (first_directory, second_directory):
+                completed = self.run_runner(
+                    "--config",
+                    str(COMPLETE_ENVIRONMENT_GAME_FIXTURE),
+                    "--output-dir",
+                    str(output_directory),
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            for relative_path in (
+                Path("events.jsonl"),
+                Path("result.json"),
+                Path("checkpoints/latest.json"),
+            ):
+                self.assertEqual(
+                    (first_directory / relative_path).read_bytes(),
+                    (second_directory / relative_path).read_bytes(),
+                    relative_path,
+                )
+
+            events = [
+                json.loads(line)
+                for line in (first_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(len(events), 193)
+            self.assertEqual(
+                {
+                    "action": events[1]["action"],
+                    "board": events[1]["board"],
+                    "board_after_move": events[1]["board_after_move"],
+                    "score_delta": events[1]["score_delta"],
+                },
+                {
+                    "action": "DOWN",
+                    "board": [
+                        [0, 0, 0, 0],
+                        [2, 0, 0, 0],
+                        [2, 0, 0, 0],
+                        [2, 0, 0, 0],
+                    ],
+                    "board_after_move": [
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [2, 0, 0, 0],
+                        [4, 0, 0, 0],
+                    ],
+                    "score_delta": 4,
+                },
+            )
+            self.assertEqual(
+                {
+                    "action": events[4]["action"],
+                    "board": events[4]["board"],
+                    "board_after_move": events[4]["board_after_move"],
+                    "score_delta": events[4]["score_delta"],
+                },
+                {
+                    "action": "RIGHT",
+                    "board": [
+                        [2, 0, 0, 0],
+                        [4, 0, 0, 0],
+                        [2, 0, 0, 0],
+                        [4, 0, 0, 0],
+                    ],
+                    "board_after_move": [
+                        [0, 0, 0, 2],
+                        [0, 0, 0, 4],
+                        [0, 0, 0, 2],
+                        [0, 0, 0, 4],
+                    ],
+                    "score_delta": 0,
+                },
+            )
+            self.assertEqual(
+                {
+                    "action": events[147]["action"],
+                    "board": events[147]["board"],
+                    "board_after_move": events[147]["board_after_move"],
+                    "score_delta": events[147]["score_delta"],
+                },
+                {
+                    "action": "LEFT",
+                    "board": [
+                        [2, 2, 4, 2],
+                        [0, 32, 16, 4],
+                        [8, 32, 8, 2],
+                        [128, 64, 16, 8],
+                    ],
+                    "board_after_move": [
+                        [4, 4, 2, 0],
+                        [32, 16, 4, 0],
+                        [8, 32, 8, 2],
+                        [128, 64, 16, 8],
+                    ],
+                    "score_delta": 4,
+                },
+            )
+
+            for index, event in enumerate(events):
+                self.assertFalse(event["policy_failure"])
+                self.assertTrue(event["valid_action"])
+                self.assertEqual(
+                    sum(tile for row in event["next_board"] for tile in row),
+                    sum(tile for row in event["board"] for tile in row)
+                    + event["spawned_tile"]["value"],
+                )
+                self.assertGreaterEqual(event["score_delta"], 0)
+                self.assertEqual(event["score_delta"] % 4, 0)
+                if index + 1 < len(events):
+                    self.assertEqual(
+                        event["next_board"],
+                        events[index + 1]["board"],
+                    )
+                for board_field in (
+                    "board",
+                    "board_after_move",
+                    "next_board",
+                ):
+                    board = event[board_field]
+                    self.assertEqual(len(board), 4)
+                    self.assertTrue(all(len(row) == 4 for row in board))
+                    self.assertTrue(
+                        all(
+                            tile == 0
+                            or (tile >= 2 and tile & (tile - 1) == 0)
+                            for row in board
+                            for tile in row
+                        )
+                    )
+
+            result = json.loads((first_directory / "result.json").read_text())
+            self.assertEqual(result["completed_steps"], 193)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(
+                result["game"],
+                {
+                    "2048_success": False,
+                    "empty_cells": 0,
+                    "maximum_tile": 256,
+                    "moves": 193,
+                    "policy_failure": False,
+                    "score": 2304,
+                    "termination_reason": "game_over",
+                    "tile_histogram": {
+                        "2": 3,
+                        "4": 4,
+                        "8": 5,
+                        "16": 1,
+                        "32": 1,
+                        "64": 1,
+                        "256": 1,
+                    },
+                },
+            )
+
+    def test_reachable_four_equal_tiles_merge_in_pairs_without_chaining(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config_path = root / "merge-edge.json"
+            output_directory = root / "run"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "experiment_name": "reachable-merge-edge",
+                        "seed": 35,
+                        "total_steps": 42,
+                        "fixture": {
+                            "environment_game": {
+                                "variant": "direct_action",
+                                "action_preferences": [
+                                    "LEFT",
+                                    "DOWN",
+                                    "RIGHT",
+                                    "UP",
+                                ],
+                            }
+                        },
+                        "telemetry": {
+                            "wandb_project": "2048llm-fixture"
+                        },
+                    }
+                )
+            )
+
+            completed = self.run_runner(
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(len(events), 42)
+            self.assertEqual(
+                {
+                    "action": events[-1]["action"],
+                    "board": events[-1]["board"],
+                    "board_after_move": events[-1]["board_after_move"],
+                    "score_delta": events[-1]["score_delta"],
+                },
+                {
+                    "action": "LEFT",
+                    "board": [
+                        [2, 0, 0, 0],
+                        [8, 0, 0, 0],
+                        [2, 2, 2, 2],
+                        [32, 32, 8, 4],
+                    ],
+                    "board_after_move": [
+                        [2, 0, 0, 0],
+                        [8, 0, 0, 0],
+                        [4, 4, 0, 0],
+                        [64, 8, 4, 0],
+                    ],
+                    "score_delta": 72,
+                },
             )
 
 

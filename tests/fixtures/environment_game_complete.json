@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "experiment_name": "issue-5-complete-environment-game",
+  "seed": 2048,
+  "total_steps": 1000,
+  "fixture": {
+    "environment_game": {
+      "variant": "direct_action",
+      "action_preferences": ["LEFT", "DOWN", "RIGHT", "UP"]
+    }
+  },
+  "telemetry": {
+    "wandb_project": "2048llm-fixture"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "experiment_name": "issue-5-seeded-environment-game",
+  "seed": 7,
+  "total_steps": 4,
+  "fixture": {
+    "environment_game": {
+      "variant": "direct_action",
+      "responses": [
+        {
+          "response": "<action>LEFT</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "response": "<action>UP</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "response": "<action>LEFT</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "response": "<action>UP</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        }
+      ]
+    }
+  },
+  "telemetry": {
+    "wandb_project": "2048llm-fixture"
+  }
+}

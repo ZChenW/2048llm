@@ -46,6 +46,31 @@ letter and reject non-ASCII alphabetic characters. `result.json` reports
 parse, truncation, illegal-action, valid-action, Policy Failure, and mean
 response-length metrics for each variant.
 
+Run one deterministic complete 2048 game with the model-free scripted
+Direct-action Policy:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --config tests/fixtures/environment_game_complete.json \
+  --output-dir runs/environment-game-complete
+```
+
+An `environment_game` starts from the standard seeded two-tile reset. It can
+use captured `responses` to exercise the strict Policy Response contract or a
+Direct-action `action_preferences` script that selects from the current board
+alone. Each legal action uses canonical compress-once, merge-once, merge-score,
+and seeded 90% 2-tile / 10% 4-tile spawning. An illegal, malformed, or
+truncated response ends the game immediately as Policy Failure.
+
+Environment events record the current board-only Markov Policy prompt,
+pre-spawn and post-spawn boards, score delta, and spawned tile. `result.json`
+records score, moves, maximum tile, empty cells, tile histogram, termination
+reason, Policy Failure, and 2048 Success. Checkpoints contain the board, score,
+move count, and complete RNG state; resume verifies the snapshot is exactly
+reachable by replaying the configured seed and prior responses before
+restoring it.
+
 Run the CLI contract tests:
 
 ```bash
