@@ -24,12 +24,12 @@ optimizer steps against Dynamic Board Pool generation 0:
   with `ready_for_teacher_guided_grpo=false`
 
 The full 70,000-board prompt audit passed for both policies. Direct-action
-prompts used 114–135 tokens and Reasoning prompts used 126–147 tokens, all
-below the registered 160-token limit.
+Policy prompts used 114–135 tokens and Reasoning Policy prompts used 126–147
+tokens, all below the registered 160-token limit.
 
 ## Results
 
-| Metric | Direct-action | Reasoning |
+| Metric | Direct-action Policy | Reasoning Policy |
 | --- | ---: | ---: |
 | Optimizer steps | 250 | 250 |
 | Initialization mean reward | 0.259125 | -1.250000 |
@@ -39,20 +39,25 @@ below the registered 160-token limit.
 | Measurable learning | no | no |
 | Initialization Policy Failure | 8.80% | 100.00% |
 | Step-250 Policy Failure | 7.65% | 100.00% |
-| Initialization Teacher Agreement | 22.25% | 0.00% |
-| Step-250 Teacher Agreement | 21.75% | 0.00% |
+| Initialization Teacher Action Agreement | 22.25% | 0.00% |
+| Step-250 Teacher Action Agreement | 21.75% | 0.00% |
 | Initialization action entropy (nats) | 0.341256 | 0.000000 |
 | Step-250 action entropy (nats) | 0.000000 | 0.000000 |
+| Evaluation KL | unavailable (`beta=0`) | unavailable (`beta=0`) |
 
-Direct-action collapsed from 1,785 LEFT / 215 RIGHT initialization actions to
-2,000 LEFT actions at step 250. Its reward improvement confidence interval
-crosses zero, Teacher Agreement fell, and the final illegal-action rate
-remained far above the registered 2% gate. The training ledger contains 1,000
-reward events; 176 of 250 optimizer steps had zero reward dispersion and zero
-gradient, including every step from 115 through 250. This is mode collapse,
-not measurable learning.
+The Direct-action Policy collapsed from 1,785 LEFT / 215 RIGHT initialization
+actions to 2,000 LEFT actions at step 250. Its reward improvement confidence
+interval crosses zero, Teacher Action Agreement fell, and the final
+illegal-action rate remained far above the registered 2% gate. The training
+ledger contains 1,000 reward events; 176 of 250 optimizer steps had zero reward
+dispersion and zero gradient, including every step from 115 through 250. This
+is mode collapse, not measurable learning.
 
-Reasoning emitted an empty trace followed by an action,
+Evaluation KL is explicitly unavailable because the registered GRPO
+configuration sets `beta=0` and therefore does not load a reference policy;
+this is an absence with a recorded reason, not a numerical zero.
+
+The Reasoning Policy emitted an empty trace followed by an action,
 `<think>\n</think><action>...</action>`. Every initialization, training, and
 step-250 response therefore failed the strict trace contract as
 `non_english_reasoning_trace`. Although all four action tags appeared during
@@ -64,49 +69,83 @@ equals both the step-125 and starting adapter hashes:
 
 ## Resume and checkpoint evidence
 
-Direct-action was stopped at step 125 and resumed in a fresh process from
-`trainer/checkpoint-125`. The final result records source optimizer step 125,
-500 prior reward events, prior ledger SHA
+The Direct-action Policy was stopped at step 125 and resumed in a fresh process
+from `trainer/checkpoint-125`. The final result records source optimizer step
+125, 500 prior reward events, prior ledger SHA
 `005af6593bca7cfdbcadea9df32c94b7f7d0514bd628c2698f83ba25e7547672`,
 and resume-manifest SHA
 `1b076703167944145e047616e8e787b48744643f9f07c1c09e72fb2e50207cc8`.
 The resumed history is continuous through step 250 and retains exactly 1,000
-reward events. Reasoning ran uninterrupted; it is not presented as a second
-resume proof.
+reward events. The Reasoning Policy ran uninterrupted; it is not presented as
+a second resume proof.
 
 Both step-250 checkpoints contain the LoRA adapter, optimizer, scheduler, RNG,
 trainer state, resolved configuration, pool identity, validation identity, and
 resume manifest. The final adapter hashes are:
 
-- Direct-action:
+- Direct-action Policy:
   `a9af4f8ce1c0b75d0b61a5d22701821be8b79c4d0e7338205b53f48016d7dde9`
-- Reasoning:
+- Reasoning Policy:
   `65ec5ed5b77ccb2de24ddb08f0d28ec4b752b35915ccaaab3dedd9c5cecacd4c`
 
 ## Telemetry and immutable result identities
 
-- Direct-action result SHA:
+- Direct-action Policy result SHA:
   `747ac12bb5716256a02218a31de1753619fc41ce08a517de8c2ed8ef43d0027a`
-- Reasoning result SHA:
+- Reasoning Policy result SHA:
   `2148fbf0fde907acaff3d215a015b5f533316f544c1442762589e03225b4e66a`
-- Reasoning resume-manifest SHA:
+- Reasoning Policy resume-manifest SHA:
   `bbcfd9731bfaa3cbc21046e2ee9b54259b1a714c0fc5ac51921f78d4076ed0bc`
-- [Direct-action private W&B run](https://wandb.ai/zichenw66-umass-amherst/2048llm-feasibility/runs/jh3qrke6)
-- [Reasoning private W&B run](https://wandb.ai/zichenw66-umass-amherst/2048llm-feasibility/runs/k5ngkor7)
+- [Direct-action Policy private W&B run](https://wandb.ai/zichenw66-umass-amherst/2048llm-feasibility/runs/jh3qrke6)
+- [Reasoning Policy private W&B run](https://wandb.ai/zichenw66-umass-amherst/2048llm-feasibility/runs/k5ngkor7)
 
 Both W&B runs finished with comparison and evaluation metrics and zero uploaded
-artifacts. Local TensorBoard event files exist for both runs. Transformers
-5.5 placed them below `trainer/runs/` instead of the deprecated configured
-`telemetry/tensorboard` path; the runner now discovers and records the actual
-event files.
+artifacts. Local TensorBoard evidence is:
+
+- Direct-action Policy steps 1–125:
+  `trainer/runs/Jul31_04-41-45_ZChenW/events.out.tfevents.1785444105.ZChenW.247580.0`,
+  SHA `224320c2c61940eb8532df7d42e9d027ffe5149a35da31cedd6d2e7bba2332f8`
+- Direct-action Policy steps 126–250:
+  `trainer/runs/Jul31_04-47-55_ZChenW/events.out.tfevents.1785444475.ZChenW.252021.0`,
+  SHA `924f34d51022eac6827a9d395c113b7abb83cca930a5f7932985e8a11487dce2`
+- Reasoning Policy steps 1–250:
+  `trainer/runs/Jul31_05-03-09_ZChenW/events.out.tfevents.1785445389.ZChenW.256263.0`,
+  SHA `61debd1ee9bf0f03f86c893bf0cec2329e1ca8f15259cf0666b7476a0000501d`
+
+Transformers 5.5 placed these files below `trainer/runs/` instead of the
+deprecated configured `telemetry/tensorboard` path. The immutable Direct-action
+Policy result retains that configured path; the paths and hashes above are its
+post-run reconciliation. The runner now discovers and records actual event
+files for subsequent runs.
 
 ## Decision
 
 Neither policy demonstrated measurable learning. There is no promoted
 Teacher-guided candidate and no Project Success claim. The shared Dynamic
 Board Pool feedback loop in issue #10 is held: refreshing the pool and spending
-another paired 250-step block cannot repair Direct-action's collapsed
-within-group signal or Reasoning's uniformly failed response contract. A new
-ticket must first restore reward diversity and pass a bounded format/legality
-gate; issues #10, #11, and the promoted-adapter dependency of #13 remain
-scientifically blocked by this result.
+another paired 250-step block cannot repair the Direct-action Policy's
+collapsed within-group signal or the Reasoning Policy's uniformly failed
+response contract. A new ticket must first restore reward diversity and pass a
+bounded format/legality gate; issues #10, #11, and the promoted-adapter
+dependency of #13 remain scientifically blocked by this result.
+
+Re-entry to issue #10 requires new registered evidence that:
+
+- the Reasoning Policy passes a bounded non-empty Policy Reasoning Trace and
+  Policy Response gate;
+- the Direct-action Policy no longer collapses to one action and both policies
+  meet the registered Policy Failure threshold;
+- Rollout Groups sustain non-zero reward dispersion rather than changing only
+  the reward mean between boards;
+- gradients are non-zero and the resulting adapter differs from its starting
+  adapter; and
+- the protocol change is reviewed separately instead of being hidden inside a
+  Dynamic Board Pool refresh.
+
+Until then, issue #11 would only extend the same zero-signal process, and issue
+#13 has no promoted Teacher-guided adapter to load. Issues #14 and #15 remain
+transitively held: advancing the Start-state Curriculum would violate its
+promotion gate, while registered test seeds and the causal Policy Reasoning
+Trace audit must not be consumed with an empty-trace policy. Independently,
+ADR 0002 still requires optimizer/RNG restart continuity or an explicitly
+accepted adapter-only recovery design before a long Environment GRPO run.
