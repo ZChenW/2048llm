@@ -7,11 +7,13 @@ import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
+from typing import Any, Mapping
 import unittest
 from unittest.mock import patch
 
 from llm2048.teacher_guided_block import (
     TeacherGuidedBlockConfig,
+    _training_summary,
     build_grpo_arguments,
     build_reward_function,
     checkpoint_contract,
@@ -342,6 +344,42 @@ class TeacherGuidedBlockContractTests(unittest.TestCase):
             ):
                 checkpoint_contract(checkpoint, expected_step=250)
 
+    def test_training_summary_preserves_pre_resume_reward_events(self) -> None:
+        before_resume: list[Mapping[str, Any]] = [
+            {
+                "reward": 0.25,
+                "policy_failure": False,
+                "policy_failure_reason": None,
+            }
+        ]
+        after_resume: list[Mapping[str, Any]] = [
+            {
+                "reward": -1.0,
+                "policy_failure": True,
+                "policy_failure_reason": "illegal_action",
+            }
+        ]
+
+        summary = _training_summary(
+            reward_events=after_resume,
+            all_reward_events=before_resume + after_resume,
+            log_history=[],
+            trainer_metrics={},
+            wall_seconds=1.0,
+            global_step=250,
+        )
+
+        self.assertEqual(summary["reward_events_this_invocation"], 1)
+        self.assertEqual(summary["reward_events_all_invocations"], 2)
+        self.assertAlmostEqual(
+            summary["reward_mean_all_invocations"],
+            -0.375,
+        )
+        self.assertEqual(
+            summary["policy_failure_classes_all_invocations"],
+            {"illegal_action": 1},
+        )
+
     def test_public_runner_completes_controlled_interrupt_and_resume_via_trl(
         self,
     ) -> None:
@@ -408,6 +446,27 @@ class TeacherGuidedBlockContractTests(unittest.TestCase):
                     (checkpoint / name).write_text(
                         content, encoding="utf-8"
                     )
+                reward_path = (
+                    Path(str(self.args["output_dir"])).parent
+                    / "training"
+                    / "reward-events.jsonl"
+                )
+                reward_path.parent.mkdir(parents=True, exist_ok=True)
+                prior_step = 125 if resume_from_checkpoint is not None else 0
+                event = {
+                    "reward": 0.5,
+                    "reward_components": {
+                        "action_quality": 0.5,
+                        "best_action_bonus": 0.0,
+                        "illegal_action_penalty": 0.0,
+                        "policy_failure_penalty": 0.0,
+                    },
+                    "policy_failure": False,
+                    "policy_failure_reason": None,
+                }
+                with reward_path.open("a", encoding="utf-8") as destination:
+                    for _ in range((step - prior_step) * 4):
+                        destination.write(json.dumps(event) + "\n")
                 return SimpleNamespace(metrics={"train_loss": 0.5})
 
         class FakeRun:

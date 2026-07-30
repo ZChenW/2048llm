@@ -1037,7 +1037,30 @@ def run_teacher_guided_block(
             output_directory / "training" / "reward-events.jsonl"
         )
         reward_events_path.parent.mkdir(parents=True, exist_ok=True)
-        if not resumed:
+        prior_reward_events: list[Mapping[str, Any]] = []
+        if resumed:
+            if not reward_events_path.is_file():
+                raise TeacherGuidedBlockPreflightError(
+                    "training reward events are missing before resume"
+                )
+            prior_reward_events_sha256 = _file_sha256(reward_events_path)
+            prior_reward_events = _read_training_reward_events(
+                reward_events_path
+            )
+            expected_prior_events = (
+                config.checkpoint["controlled_interruption_step"]
+                * config.grpo["group_size"]
+            )
+            if len(prior_reward_events) != expected_prior_events:
+                raise TeacherGuidedBlockPreflightError(
+                    "training reward event count does not match the "
+                    "controlled interruption step"
+                )
+            resume_evidence["prior_reward_events"] = {
+                "count": len(prior_reward_events),
+                "sha256": prior_reward_events_sha256,
+            }
+        else:
             reward_events_path.write_text("", encoding="utf-8")
         reward_events: list[dict[str, Any]] = []
 
@@ -1114,8 +1137,15 @@ def run_teacher_guided_block(
             key: _json_scalar(value)
             for key, value in dict(train_output.metrics).items()
         }
+        all_reward_events = _read_training_reward_events(reward_events_path)
+        expected_reward_events = global_step * config.grpo["group_size"]
+        if len(all_reward_events) != expected_reward_events:
+            raise RuntimeError(
+                "training reward event count does not match optimizer progress"
+            )
         training_summary = _training_summary(
             reward_events=reward_events,
+            all_reward_events=all_reward_events,
             log_history=trainer.state.log_history,
             trainer_metrics=trainer_metrics,
             wall_seconds=train_wall_seconds,
@@ -1888,6 +1918,7 @@ def _completion_length_and_truncation(
 def _training_summary(
     *,
     reward_events: Sequence[Mapping[str, Any]],
+    all_reward_events: Sequence[Mapping[str, Any]],
     log_history: Sequence[Mapping[str, Any]],
     trainer_metrics: Mapping[str, Any],
     wall_seconds: float,
@@ -1911,6 +1942,14 @@ def _training_summary(
         for event in reward_events
         if event.get("policy_failure")
     )
+    all_reward_values = [
+        float(event["reward"]) for event in all_reward_events
+    ]
+    all_failure_classes = Counter(
+        str(event["policy_failure_reason"])
+        for event in all_reward_events
+        if event.get("policy_failure")
+    )
     return {
         "optimizer_steps": global_step,
         "wall_seconds": wall_seconds,
@@ -1920,6 +1959,15 @@ def _training_summary(
         ),
         "policy_failure_classes_this_invocation": dict(
             sorted(failure_classes.items())
+        ),
+        "reward_events_all_invocations": len(all_reward_events),
+        "reward_mean_all_invocations": (
+            statistics.fmean(all_reward_values)
+            if all_reward_values
+            else None
+        ),
+        "policy_failure_classes_all_invocations": dict(
+            sorted(all_failure_classes.items())
         ),
         "entropy": {
             "mean": (
@@ -1944,6 +1992,44 @@ def _training_summary(
             for row in log_history
         ],
     }
+
+
+def _read_training_reward_events(
+    path: Path,
+) -> list[Mapping[str, Any]]:
+    """Load the append-only reward ledger and fail closed on schema drift."""
+    rows = _read_json_lines(path)
+    component_names = {
+        "action_quality",
+        "best_action_bonus",
+        "illegal_action_penalty",
+        "policy_failure_penalty",
+    }
+    for index, row in enumerate(rows, 1):
+        reward = row.get("reward")
+        components = row.get("reward_components")
+        policy_failure = row.get("policy_failure")
+        failure_reason = row.get("policy_failure_reason")
+        if (
+            not isinstance(reward, (int, float))
+            or isinstance(reward, bool)
+            or not isinstance(components, dict)
+            or set(components) != component_names
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                for value in components.values()
+            )
+            or not isinstance(policy_failure, bool)
+            or (
+                failure_reason is not None
+                and not isinstance(failure_reason, str)
+            )
+        ):
+            raise TeacherGuidedBlockPreflightError(
+                f"{path}:{index} has an invalid training reward event"
+            )
+    return rows
 
 
 def _compare_evaluation_files(
