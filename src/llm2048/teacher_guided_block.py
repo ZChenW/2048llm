@@ -647,7 +647,9 @@ def prepare_block_data_plan(
             "Teacher Policy Corpus manifest SHA-256 differs from the "
             "registered block configuration"
         )
-    manifest_object = _object(manifest, "Teacher Policy Corpus manifest")
+    manifest_object = _evidence_object(
+        manifest, "Teacher Policy Corpus manifest"
+    )
     _validate_corpus_manifest(manifest_object)
     tau = float(manifest_object["calibration"]["tau"])
     if not math.isfinite(tau) or tau <= 0.0:
@@ -732,8 +734,8 @@ def inspect_upstream_evidence(
         environ=environment,
         label="#7 GRPO feasibility result",
     )
-    _require(gate.get("status"), "completed", "#8 result.status")
-    selections = _object(
+    _evidence_require(gate.get("status"), "completed", "#8 result.status")
+    selections = _evidence_object(
         gate.get("selected_starting_points"),
         "#8 result.selected_starting_points",
     )
@@ -741,25 +743,33 @@ def inspect_upstream_evidence(
         raise TeacherGuidedBlockPreflightError(
             "#8 result must select both Student Policy variants"
         )
-    direct = _object(selections["direct_action"], "#8 Direct-action selection")
-    reasoning = _object(selections["reasoning"], "#8 Reasoning selection")
+    direct = _evidence_object(
+        selections["direct_action"], "#8 Direct-action selection"
+    )
+    reasoning = _evidence_object(
+        selections["reasoning"], "#8 Reasoning selection"
+    )
     _validate_selected_candidate(config, "direct_action", direct)
     _validate_selected_candidate(config, "reasoning", reasoning)
 
-    _require(feasibility.get("status"), "completed", "#7 result.status")
-    decision = _object(feasibility.get("decision"), "#7 result.decision")
-    _require(decision.get("go"), True, "#7 result.decision.go")
-    _require(
+    _evidence_require(
+        feasibility.get("status"), "completed", "#7 result.status"
+    )
+    decision = _evidence_object(
+        feasibility.get("decision"), "#7 result.decision"
+    )
+    _evidence_require(decision.get("go"), True, "#7 result.decision.go")
+    _evidence_require(
         decision.get("precision"),
         config.model["precision"],
         "#7 result.decision.precision",
     )
-    _require(
+    _evidence_require(
         decision.get("quantized_fallback_used"),
         False,
         "#7 result.decision.quantized_fallback_used",
     )
-    _require(
+    _evidence_require(
         decision.get("teacher_guided_group_size"),
         config.grpo["group_size"],
         "#7 result.decision.teacher_guided_group_size",
@@ -2240,7 +2250,7 @@ def _load_evidence(
         raise TeacherGuidedBlockPreflightError(
             f"{label} is not valid JSON"
         ) from error
-    return path, _object(value, label)
+    return path, _evidence_object(value, label)
 
 
 def _validate_corpus_manifest(manifest: Mapping[str, Any]) -> None:
@@ -2454,34 +2464,36 @@ def _validate_selected_candidate(
     expected_model = config.model["id"]
     expected_revision = config.model["revision"]
     if variant == "direct_action":
-        _require(
+        _evidence_require(
             candidate.get("kind"),
             "unchanged_base_model",
             "#8 Direct-action selection.kind",
         )
-        _require(
+        _evidence_require(
             candidate.get("model_id"),
             expected_model,
             "#8 Direct-action selection.model_id",
         )
-        _require(
+        _evidence_require(
             candidate.get("revision"),
             expected_revision,
             "#8 Direct-action selection.revision",
         )
     else:
-        _require(
+        _evidence_require(
             candidate.get("kind"),
             "lora_adapter",
             "#8 Reasoning selection.kind",
         )
-        _nonempty(candidate.get("path"), "#8 Reasoning selection.path")
-        _require(
+        _evidence_nonempty(
+            candidate.get("path"), "#8 Reasoning selection.path"
+        )
+        _evidence_require(
             candidate.get("base_model_id"),
             expected_model,
             "#8 Reasoning selection.base_model_id",
         )
-        _require(
+        _evidence_require(
             candidate.get("base_model_revision"),
             expected_revision,
             "#8 Reasoning selection.base_model_revision",
@@ -2681,6 +2693,29 @@ def _object(value: Any, field: str) -> Mapping[str, Any]:
             f"{field} must be an object"
         )
     return value
+
+
+def _evidence_object(value: Any, field: str) -> Mapping[str, Any]:
+    if not isinstance(value, dict):
+        raise TeacherGuidedBlockPreflightError(
+            f"{field} must be an object"
+        )
+    return value
+
+
+def _evidence_nonempty(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TeacherGuidedBlockPreflightError(
+            f"{field} must be a non-empty string"
+        )
+    return value
+
+
+def _evidence_require(value: Any, expected: Any, field: str) -> None:
+    if value != expected or type(value) is not type(expected):
+        raise TeacherGuidedBlockPreflightError(
+            f"{field} must be {expected!r}"
+        )
 
 
 def _exact_keys(
