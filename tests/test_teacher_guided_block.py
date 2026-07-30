@@ -467,6 +467,14 @@ class TeacherGuidedBlockContractTests(unittest.TestCase):
                 with reward_path.open("a", encoding="utf-8") as destination:
                     for _ in range((step - prior_step) * 4):
                         destination.write(json.dumps(event) + "\n")
+                tensorboard_event = (
+                    Path(str(self.args["output_dir"]))
+                    / "runs"
+                    / "fake"
+                    / f"events.out.tfevents.fake-{step}"
+                )
+                tensorboard_event.parent.mkdir(parents=True, exist_ok=True)
+                tensorboard_event.write_bytes(b"event")
                 return SimpleNamespace(metrics={"train_loss": 0.5})
 
         class FakeRun:

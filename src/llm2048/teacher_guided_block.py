@@ -1222,8 +1222,8 @@ def run_teacher_guided_block(
                     "comparison/measurable_learning": float(
                         comparison["measurable_learning"]
                     ),
+                    "comparison/source_training_global_step": global_step,
                 },
-                step=global_step,
             )
             result = {
                 "schema_version": 1,
@@ -1259,6 +1259,17 @@ def run_teacher_guided_block(
                     "project_success_claimed": False,
                 },
             }
+        tensorboard_event_files = [
+            str(path.relative_to(output_directory))
+            for path in sorted(
+                output_directory.rglob("events.out.tfevents.*")
+            )
+            if path.is_file()
+        ]
+        if not tensorboard_event_files:
+            raise RuntimeError(
+                "GRPOTrainer did not write local TensorBoard events"
+            )
         result["telemetry"] = {
             "wandb": {
                 "mode": "online",
@@ -1270,7 +1281,12 @@ def run_teacher_guided_block(
                 "checkpoints_uploaded": False,
             },
             "tensorboard": {
-                "path": "telemetry/tensorboard",
+                "event_files": tensorboard_event_files,
+                "configured_path": "telemetry/tensorboard",
+                "configured_path_honored": all(
+                    path.startswith("telemetry/tensorboard/")
+                    for path in tensorboard_event_files
+                ),
             },
             "wall_seconds": time.perf_counter() - started,
         }
