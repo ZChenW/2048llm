@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import tempfile
@@ -17,6 +18,7 @@ from llm2048.stage2_backend_spike import (
     validate_adapter_directory,
 )
 from llm2048.policy_contracts import change_making_actions
+import llm2048.stage2_trl_backend as trl_backend
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -105,6 +107,42 @@ class CanonicalEpisodeTests(unittest.TestCase):
         self.assertEqual(reward.tile_progress, 1.0)
         self.assertEqual(reward.score_progress, 0.25)
         self.assertEqual(reward.total, 6.25)
+
+
+class TrlEnvironmentContractTests(unittest.TestCase):
+    def test_only_policy_tool_is_public_and_three_steps_are_real(self) -> None:
+        config, _ = BackendSpikeConfig.load(CONFIG_PATH)
+        trl_backend._ACTIVE_CONFIG = config
+        environment = trl_backend.Trl2048Environment()
+        public_methods = {
+            name
+            for name, _ in inspect.getmembers(
+                environment,
+                predicate=inspect.ismethod,
+            )
+            if name not in {"reset", "get_reward"} and not name.startswith("_")
+        }
+
+        self.assertEqual(public_methods, {"submit_policy_response"})
+        self.assertIn(
+            "Call submit_policy_response exactly once",
+            environment.reset(rng_seed=config.start_state.rng_seed),
+        )
+        for step_index in range(config.rollout.horizon):
+            assert environment._episode is not None
+            action = change_making_actions(environment._episode.board)[0]
+            observation = environment.submit_policy_response(
+                f"<action>{action}</action>"
+            )
+            if step_index + 1 < config.rollout.horizon:
+                self.assertIn("Board (4x4 JSON array", observation)
+            else:
+                self.assertIn("terminated: horizon", observation)
+
+        evidence = environment._evidence()
+        self.assertEqual(len(evidence["steps"]), 3)
+        self.assertFalse(evidence["markov_prefix_preserved"])
+        self.assertIsInstance(environment.get_reward(), float)
 
 
 class ArtifactContractTests(unittest.TestCase):
