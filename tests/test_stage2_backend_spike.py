@@ -171,19 +171,44 @@ class ArtifactContractTests(unittest.TestCase):
         config, _ = BackendSpikeConfig.load(CONFIG_PATH)
         group = rollout_group_manifest(config)
 
-        policy_sampling_seeds = [
-            _policy_sampling_seed(config, index)
-            for index in range(config.rollout.group_size)
+        policy_sampling_seed_schedules = [
+            [
+                _policy_sampling_seed(config, member_index, step_index)
+                for step_index in range(config.rollout.horizon)
+            ]
+            for member_index in range(config.rollout.group_size)
         ]
 
-        self.assertEqual(policy_sampling_seeds, [12012, 12013, 12014, 12015])
+        self.assertEqual(
+            policy_sampling_seed_schedules,
+            [
+                [12012, 12013, 12014],
+                [12015, 12016, 12017],
+                [12018, 12019, 12020],
+                [12021, 12022, 12023],
+            ],
+        )
         self.assertEqual(group["member_rng_seed"], [12012] * 4)
-        self.assertEqual(len(set(policy_sampling_seeds)), 4)
+        self.assertEqual(
+            len(
+                {
+                    seed
+                    for schedule in policy_sampling_seed_schedules
+                    for seed in schedule
+                }
+            ),
+            12,
+        )
         with self.assertRaisesRegex(
             BackendSpikePreflightError,
             "outside the registered group",
         ):
-            _policy_sampling_seed(config, config.rollout.group_size)
+            _policy_sampling_seed(config, config.rollout.group_size, 0)
+        with self.assertRaisesRegex(
+            BackendSpikePreflightError,
+            "outside the registered horizon",
+        ):
+            _policy_sampling_seed(config, 0, config.rollout.horizon)
 
     def test_art_logprob_chunk_size_tiles_registered_sequence(self) -> None:
         config, _ = BackendSpikeConfig.load(CONFIG_PATH)

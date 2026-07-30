@@ -181,13 +181,22 @@ def _logprob_calculation_chunk_size(
 def _policy_sampling_seed(
     config: BackendSpikeConfig,
     member_index: int,
+    step_index: int,
 ) -> int:
-    """Give each Student sample independent, reproducible policy randomness."""
+    """Give every Student request independent, reproducible policy randomness."""
     if not 0 <= member_index < config.rollout.group_size:
         raise BackendSpikePreflightError(
             "ART Rollout Group member index is outside the registered group"
         )
-    return config.seed + member_index
+    if not 0 <= step_index < config.rollout.horizon:
+        raise BackendSpikePreflightError(
+            "ART rollout step index is outside the registered horizon"
+        )
+    return (
+        config.seed
+        + member_index * config.rollout.horizon
+        + step_index
+    )
 
 
 async def _rollout(
@@ -203,8 +212,14 @@ async def _rollout(
     completion_tokens = 0
     rollout_started = time.monotonic()
     client = model.openai_client()
-    policy_sampling_seed = _policy_sampling_seed(config, member_index)
-    for _ in range(config.rollout.horizon):
+    policy_sampling_seeds: list[int] = []
+    for step_index in range(config.rollout.horizon):
+        policy_sampling_seed = _policy_sampling_seed(
+            config,
+            member_index,
+            step_index,
+        )
+        policy_sampling_seeds.append(policy_sampling_seed)
         prompt = episode.policy_prompt()
         completion = await client.chat.completions.create(
             model=model.get_inference_name(),
@@ -256,7 +271,13 @@ async def _rollout(
         metadata={
             "member_index": member_index,
             "rng_seed": episode.rng_seed,
-            "policy_sampling_seed": policy_sampling_seed,
+            "policy_sampling_seed_schedule": ",".join(
+                str(seed) for seed in policy_sampling_seeds
+            ),
+            "action_sequence": ",".join(
+                step.action or "POLICY_FAILURE"
+                for step in episode.steps
+            ),
             "start_snapshot_sha256": episode.start_snapshot_sha256,
             "terminal_reason": episode.terminal_reason,
         },
@@ -365,18 +386,22 @@ async def _run(
                 trajectory.metadata["start_snapshot_sha256"]
                 for trajectory in groups[0].trajectories
             }
-            policy_sampling_seeds = {
-                trajectory.metadata["policy_sampling_seed"]
+            policy_sampling_seed_schedules = {
+                trajectory.metadata["policy_sampling_seed_schedule"]
                 for trajectory in groups[0].trajectories
+            }
+            expected_policy_sampling_seed_schedules = {
+                ",".join(
+                    str(_policy_sampling_seed(config, member_index, step_index))
+                    for step_index in range(config.rollout.horizon)
+                )
+                for member_index in range(config.rollout.group_size)
             }
             if (
                 len(trajectory_seeds) != 1
                 or len(trajectory_snapshots) != 1
-                or policy_sampling_seeds
-                != {
-                    _policy_sampling_seed(config, index)
-                    for index in range(config.rollout.group_size)
-                }
+                or policy_sampling_seed_schedules
+                != expected_policy_sampling_seed_schedules
             ):
                 raise BackendSpikePreflightError(
                     "ART Rollout Group randomness schedule diverged"
@@ -463,15 +488,32 @@ async def _run(
         finally:
             await resumed_backend.close()
 
+    ordered_trajectories = sorted(
+        groups[0].trajectories,
+        key=lambda trajectory: int(trajectory.metadata["member_index"]),
+    )
     completion_tokens = sum(
         int(trajectory.metrics["completion_tokens"])
-        for trajectory in groups[0].trajectories
+        for trajectory in ordered_trajectories
     )
     environment_steps = [
         int(trajectory.metrics["environment_steps"])
-        for trajectory in groups[0].trajectories
+        for trajectory in ordered_trajectories
     ]
-    rewards = [trajectory.reward for trajectory in groups[0].trajectories]
+    rewards = [trajectory.reward for trajectory in ordered_trajectories]
+    policy_sampling_seed_matrix = [
+        [
+            int(seed)
+            for seed in trajectory.metadata[
+                "policy_sampling_seed_schedule"
+            ].split(",")
+        ]
+        for trajectory in ordered_trajectories
+    ]
+    action_sequences = [
+        trajectory.metadata["action_sequence"].split(",")
+        for trajectory in ordered_trajectories
+    ]
     metrics = {
         "peak_torch_allocated_bytes": torch.cuda.max_memory_allocated(),
         "peak_torch_reserved_bytes": torch.cuda.max_memory_reserved(),
@@ -543,7 +585,8 @@ async def _run(
         "rollout_group": {
             **group_evidence,
             "environment_steps": environment_steps,
-            "policy_sampling_seeds": sorted(policy_sampling_seeds),
+            "policy_sampling_seed_schedules": policy_sampling_seed_matrix,
+            "action_sequences": action_sequences,
             "rewards": rewards,
             "all_members_completed_2_to_4_steps": all(
                 2 <= steps <= 4 for steps in environment_steps
