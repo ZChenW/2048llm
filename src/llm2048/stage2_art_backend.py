@@ -105,7 +105,6 @@ def _internal_model_config(config: BackendSpikeConfig) -> dict[str, Any]:
             "num_generations": config.rollout.group_size,
             "per_device_train_batch_size": config.rollout.group_size,
             "gradient_accumulation_steps": 1,
-            "max_steps": config.training.optimizer_steps,
             "learning_rate": config.training.learning_rate,
             "logging_steps": 1,
             "report_to": "none",

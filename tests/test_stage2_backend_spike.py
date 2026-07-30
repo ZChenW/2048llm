@@ -24,6 +24,7 @@ from llm2048.policy_contracts import change_making_actions
 import llm2048.stage2_trl_backend as trl_backend
 from llm2048.stage2_art_backend import (
     _install_art_registry_compatibility,
+    _internal_model_config,
     _logprob_calculation_chunk_size,
     _policy_sampling_seed,
     _training_completion_token_count,
@@ -220,6 +221,14 @@ class ArtifactContractTests(unittest.TestCase):
             config.model.max_sequence_length % chunk_size,
             0,
         )
+
+    def test_art_backend_owns_the_single_optimizer_step(self) -> None:
+        config, _ = BackendSpikeConfig.load(CONFIG_PATH)
+
+        trainer_args = _internal_model_config(config)["trainer_args"]
+
+        self.assertNotIn("max_steps", trainer_args)
+        self.assertEqual(config.training.optimizer_steps, 1)
 
     def test_art_training_requires_token_id_logprobs(self) -> None:
         valid = SimpleNamespace(
