@@ -166,6 +166,18 @@ def _training_completion_token_count(choice: Any) -> int:
     return len(content)
 
 
+def _logprob_calculation_chunk_size(
+    config: BackendSpikeConfig,
+) -> int:
+    """Choose a maintained ART chunk size that exactly tiles each sequence."""
+    chunk_size = min(1024, config.model.max_sequence_length)
+    if config.model.max_sequence_length % chunk_size:
+        raise BackendSpikePreflightError(
+            "ART logprob chunk size must evenly divide max sequence length"
+        )
+    return chunk_size
+
+
 async def _rollout(
     *,
     art: Any,
@@ -257,6 +269,9 @@ async def _run(
     versions = validate_stack(config, "art_local")
     os.environ["WANDB_MODE"] = "online"
     os.environ["WANDB_LOG_MODEL"] = "false"
+    # FlashInfer 0.6.6 rejects the RTX 5070's sm_120 architecture. vLLM's
+    # maintained PyTorch-native sampler preserves the same top-k/top-p policy.
+    os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
     entity, project_access = verify_private_wandb_project(
         wandb,
         config.telemetry.wandb_project,
@@ -344,6 +359,9 @@ async def _run(
                 model,
                 groups,
                 learning_rate=config.training.learning_rate,
+                logprob_calculation_chunk_size=(
+                    _logprob_calculation_chunk_size(config)
+                ),
                 save_checkpoint=True,
             )
             training_seconds = time.monotonic() - training_started
@@ -483,6 +501,9 @@ async def _run(
                 registry_compatibility_installed
             ),
             "frozen_lora_targets_only": True,
+            "vllm_pytorch_native_sampler": (
+                os.environ["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
+            ),
         },
         "runtime": {
             "python": platform.python_version(),

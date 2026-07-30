@@ -24,6 +24,7 @@ from llm2048.policy_contracts import change_making_actions
 import llm2048.stage2_trl_backend as trl_backend
 from llm2048.stage2_art_backend import (
     _install_art_registry_compatibility,
+    _logprob_calculation_chunk_size,
     _training_completion_token_count,
 )
 
@@ -165,6 +166,17 @@ class TrlEnvironmentContractTests(unittest.TestCase):
 
 
 class ArtifactContractTests(unittest.TestCase):
+    def test_art_logprob_chunk_size_tiles_registered_sequence(self) -> None:
+        config, _ = BackendSpikeConfig.load(CONFIG_PATH)
+
+        chunk_size = _logprob_calculation_chunk_size(config)
+
+        self.assertEqual(chunk_size, 512)
+        self.assertEqual(
+            config.model.max_sequence_length % chunk_size,
+            0,
+        )
+
     def test_art_training_requires_token_id_logprobs(self) -> None:
         valid = SimpleNamespace(
             logprobs=SimpleNamespace(
