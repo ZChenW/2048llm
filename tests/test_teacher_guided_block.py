@@ -146,6 +146,8 @@ class TeacherGuidedBlockContractTests(unittest.TestCase):
         reward = build_reward_function(
             variant="direct_action",
             max_completion_length=96,
+            eos_token_id=0,
+            pad_token_id=0,
             event_sink=events.append,
         )
         metadata = {
@@ -179,6 +181,62 @@ class TeacherGuidedBlockContractTests(unittest.TestCase):
         self.assertGreater(scores[2], scores[3])
         self.assertEqual(len(events), 4)
         self.assertEqual(events[0]["record_id"], "train-1")
+
+    def test_reward_truncation_uses_eos_at_the_exact_token_budget(
+        self,
+    ) -> None:
+        events: list[dict[str, object]] = []
+        reward = build_reward_function(
+            variant="direct_action",
+            max_completion_length=2,
+            eos_token_id=0,
+            pad_token_id=0,
+            event_sink=events.append,
+        )
+        metadata = {
+            "board_json": [
+                "[[0,2,0,0],[0,0,0,0],[0,0,2,0],[0,0,0,0]]"
+            ]
+            * 4,
+            "teacher_action_scores_json": [
+                '{"LEFT":10.0,"RIGHT":9.0,"UP":8.0,"DOWN":7.0}'
+            ]
+            * 4,
+            "teacher_action": ["LEFT"] * 4,
+            "teacher_margin_scale": [2.0] * 4,
+            "record_id": ["train-1"] * 4,
+        }
+
+        reward(
+            completions=["<action>LEFT</action>"] * 4,
+            completion_ids=[[1, 0], [1, 0], [1, 0], [1, 0]],
+            **metadata,
+        )
+
+        self.assertEqual(
+            [event["response_length_tokens"] for event in events],
+            [1, 1, 1, 1],
+        )
+        self.assertEqual(
+            [event["policy_failure"] for event in events],
+            [False, False, False, False],
+        )
+
+        events.clear()
+        reward(
+            completions=["<action>LEFT</action>"] * 4,
+            completion_ids=[[1, 2], [1, 2], [1, 2], [1, 2]],
+            **metadata,
+        )
+        self.assertEqual(
+            [event["policy_failure_reason"] for event in events],
+            [
+                "truncated_response",
+                "truncated_response",
+                "truncated_response",
+                "truncated_response",
+            ],
+        )
 
     def test_paired_comparison_requires_positive_lower_confidence_bound(
         self,
@@ -301,7 +359,13 @@ class TeacherGuidedBlockContractTests(unittest.TestCase):
             def apply_chat_template(self, *_: object, **__: object) -> str:
                 return "prompt"
 
-            def __call__(self, *_: object, **__: object) -> dict[str, list[int]]:
+            def __call__(
+                self,
+                *,
+                text: object,
+                **__: object,
+            ) -> dict[str, list[int]]:
+                del text
                 return {"input_ids": [1]}
 
         class FakeTrainer:

@@ -306,6 +306,8 @@ def build_reward_function(
     *,
     variant: PolicyVariant,
     max_completion_length: int,
+    eos_token_id: int | Sequence[int],
+    pad_token_id: int,
     event_sink: Callable[[dict[str, Any]], None],
     group_size: int = 4,
 ) -> Callable[..., list[float]]:
@@ -334,11 +336,12 @@ def build_reward_function(
             raise RuntimeError(
                 "GRPOTrainer reward batch is not a whole Rollout Group"
             )
-        completion_rows = (
-            completion_ids
-            if completion_ids is not None
-            else [None] * count
-        )
+        if completion_ids is None:
+            raise RuntimeError(
+                "GRPOTrainer omitted completion IDs needed for truncation "
+                "classification"
+            )
+        completion_rows = completion_ids
         if len(completion_rows) != count:
             raise RuntimeError(
                 "GRPOTrainer completion IDs differ from completion count"
@@ -363,8 +366,13 @@ def build_reward_function(
                 metadata["teacher_action"][group_start]
             ).upper()
             tau = float(metadata["teacher_margin_scale"][group_start])
-            lengths = [
-                len(row) if row is not None else 0
+            completion_metadata = [
+                _completion_length_and_truncation(
+                    row,
+                    eos_token_id=eos_token_id,
+                    pad_token_id=pad_token_id,
+                    max_new_tokens=max_completion_length,
+                )
                 for row in completion_rows[group_start:group_end]
             ]
             responses = [
@@ -377,17 +385,19 @@ def build_reward_function(
                     TeacherGuidedCompletion(
                         variant=variant,
                         response=response,
-                        truncated=length >= max_completion_length,
+                        truncated=truncated,
                     )
-                    for response, length in zip(responses, lengths)
+                    for response, (_, truncated) in zip(
+                        responses, completion_metadata
+                    )
                 ],
                 group_size=group_size,
                 teacher_action_scores=action_scores,  # type: ignore[arg-type]
                 teacher_action=teacher_action,  # type: ignore[arg-type]
                 tau=tau,
             )
-            for response, length, reward in zip(
-                responses, lengths, rewards
+            for response, (length, _), reward in zip(
+                responses, completion_metadata, rewards
             ):
                 event_sink(
                     {
@@ -1038,6 +1048,8 @@ def run_teacher_guided_block(
         reward_function = build_reward_function(
             variant=variant,
             max_completion_length=config.grpo["max_completion_length"],
+            eos_token_id=processor.eos_token_id,
+            pad_token_id=processor.pad_token_id,
             event_sink=sink,
             group_size=config.grpo["group_size"],
         )
@@ -1619,7 +1631,10 @@ def _training_rows(
     prompt_lengths: list[int] = []
     for record in records:
         prompt = _render_prompt(processor, variant, record["board"])
-        encoded = processor(prompt, add_special_tokens=False)
+        encoded = processor(
+            text=prompt,
+            add_special_tokens=False,
+        )
         token_ids = encoded["input_ids"]
         if token_ids and isinstance(token_ids[0], list):
             token_ids = token_ids[0]
@@ -1719,7 +1734,7 @@ def _evaluate_policy(
             for row in batch
         ]
         encoded = processor(
-            prompts,
+            text=prompts,
             add_special_tokens=False,
             padding=True,
             return_tensors="pt",
@@ -1852,6 +1867,22 @@ def _trim_completion_ids(
             continue
         trimmed.append(token_id)
     return trimmed, len(completion_ids) >= max_new_tokens and not terminated
+
+
+def _completion_length_and_truncation(
+    completion_ids: Sequence[int],
+    *,
+    eos_token_id: int | Sequence[int],
+    pad_token_id: int,
+    max_new_tokens: int,
+) -> tuple[int, bool]:
+    trimmed, truncated = _trim_completion_ids(
+        completion_ids,
+        eos_token_id=eos_token_id,
+        pad_token_id=pad_token_id,
+        max_new_tokens=max_new_tokens,
+    )
+    return len(trimmed), truncated
 
 
 def _training_summary(
