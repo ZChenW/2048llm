@@ -124,10 +124,22 @@ class TrlEnvironmentContractTests(unittest.TestCase):
         }
 
         self.assertEqual(public_methods, {"submit_policy_response"})
-        self.assertIn(
-            "Call submit_policy_response exactly once",
-            environment.reset(rng_seed=config.start_state.rng_seed),
+        self.assertEqual(
+            tuple(
+                inspect.signature(
+                    environment.submit_policy_response
+                ).parameters
+            ),
+            ("response",),
         )
+        instruction = environment.reset(
+            rng_seed=config.start_state.rng_seed
+        )
+        self.assertIn(
+            "Do not return the Policy Response as assistant text",
+            instruction,
+        )
+        self.assertIn("setting response to the exact Policy Response", instruction)
         for step_index in range(config.rollout.horizon):
             assert environment._episode is not None
             action = change_making_actions(environment._episode.board)[0]

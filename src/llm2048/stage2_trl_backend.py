@@ -29,8 +29,9 @@ from llm2048.stage2_backend_spike import (
 _ACTIVE_CONFIG: BackendSpikeConfig | None = None
 _CREATED_ENVIRONMENTS: list["Trl2048Environment"] = []
 _TOOL_INSTRUCTION = (
-    "\nCall submit_policy_response exactly once, setting policy_response to "
-    "the exact response string required above."
+    "\nDo not return the Policy Response as assistant text. You must call "
+    "submit_policy_response exactly once, setting response to the exact "
+    "Policy Response string required above."
 )
 
 
@@ -56,18 +57,18 @@ class Trl2048Environment:
         self.rollout_completed_at = None
         return _TOOL_INSTRUCTION
 
-    def submit_policy_response(self, policy_response: str) -> str:
+    def submit_policy_response(self, response: str) -> str:
         """Submit one strict Policy Response and return the next board observation.
 
         Args:
-            policy_response: Exactly one canonical ``<action>...</action>`` response.
+            response: Exactly one canonical ``<action>...</action>`` response.
 
         Returns:
             The next Markov Policy prompt, or a terminal status string.
         """
         if self._episode is None:
             raise RuntimeError("environment must be reset before a move")
-        step = self._episode.submit_policy_response(policy_response)
+        step = self._episode.submit_policy_response(response)
         if step.terminal:
             return f"Training Episode terminated: {self._episode.terminal_reason}."
         self.policy_observation_count += 1
@@ -111,7 +112,7 @@ def _run(
     import torch
     from datasets import Dataset  # type: ignore[import-untyped]
     from peft import LoraConfig, PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import GRPOConfig, GRPOTrainer
     import wandb
 
@@ -256,22 +257,12 @@ def _run(
     resume_arguments = replace(
         arguments,
         output_dir=str(output_directory / "resume-trainer"),
-        max_steps=1,
+        max_steps=-1,
+        num_train_epochs=0.0,
         steps_per_generation=None,
         report_to=[],
         run_name=f"{config.experiment_name}-trl-resume",
     )
-
-    class StopAfterResumeLoadCallback(TrainerCallback):
-        def on_train_begin(
-            self,
-            args: Any,
-            state: Any,
-            control: Any,
-            **kwargs: Any,
-        ) -> Any:
-            control.should_training_stop = True
-            return control
 
     resumed_trainer = GRPOTrainer(  # type: ignore[call-arg,arg-type]
         model=resumed_model,  # type: ignore[arg-type]
@@ -279,7 +270,6 @@ def _run(
         train_dataset=dataset,
         processing_class=tokenizer,
         environment_factory=Trl2048Environment,
-        callbacks=[StopAfterResumeLoadCallback()],
     )
     resume_result = resumed_trainer.train(resume_from_checkpoint=str(checkpoint))
     if resume_result.global_step != 1:
