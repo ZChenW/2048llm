@@ -403,9 +403,13 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             self.assertEqual(
                 result["policy_metrics"]["reasoning"],
                 {
-                    **expected_rates,
-                    "mean_response_length_tokens": 164 / 7,
-                    "responses": 7,
+                    "illegal_action_rate": 1 / 9,
+                    "mean_response_length_tokens": 186 / 9,
+                    "parse_rate": 2 / 9,
+                    "policy_failure_rate": 8 / 9,
+                    "responses": 9,
+                    "truncation_rate": 1 / 9,
+                    "valid_action_rate": 1 / 9,
                 },
             )
 
@@ -415,7 +419,7 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                 .read_text()
                 .splitlines()
             ]
-            self.assertEqual(len(events), 14)
+            self.assertEqual(len(events), 16)
             direct_events = [
                 event for event in events if event["variant"] == "direct_action"
             ]
@@ -452,7 +456,7 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             self.assertEqual(reasoning_events[0]["action"], "UP")
             self.assertTrue(reasoning_events[0]["valid_action"])
 
-            expected_failure_reasons = [
+            direct_failure_reasons = [
                 "malformed_response",
                 "truncated_response",
                 "missing_action",
@@ -462,11 +466,16 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             ]
             self.assertEqual(
                 [event["policy_failure_reason"] for event in direct_events[1:]],
-                expected_failure_reasons,
+                direct_failure_reasons,
             )
             self.assertEqual(
                 [event["policy_failure_reason"] for event in reasoning_events[1:]],
-                expected_failure_reasons,
+                [
+                    *direct_failure_reasons[:-1],
+                    "non_english_reasoning_trace",
+                    "non_english_reasoning_trace",
+                    "illegal_action",
+                ],
             )
             self.assertTrue(
                 all(event["action"] is None for event in direct_events[1:-1])
@@ -537,7 +546,9 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                     (11, 6.0),
                     (12, 15.0),
                     (13, 10.0),
-                    (14, 11.0),
+                    (14, 10.0),
+                    (15, 12.0),
+                    (16, 11.0),
                 ],
             )
 
@@ -596,6 +607,132 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                 completed.stderr,
             )
             self.assertFalse(output_directory.exists())
+
+    def test_policy_legality_is_derived_from_board_changes(self) -> None:
+        movement_boards = {
+            "LEFT": [
+                [0, 2, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ],
+            "RIGHT": [
+                [2, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ],
+            "UP": [
+                [0, 0, 0, 0],
+                [2, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ],
+            "DOWN": [
+                [2, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ],
+        }
+        merge_boards = {
+            "LEFT": [
+                [2, 2, 4, 8],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ],
+            "RIGHT": [
+                [8, 4, 2, 2],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ],
+            "UP": [
+                [2, 0, 0, 0],
+                [2, 0, 0, 0],
+                [4, 0, 0, 0],
+                [8, 0, 0, 0],
+            ],
+            "DOWN": [
+                [8, 0, 0, 0],
+                [4, 0, 0, 0],
+                [2, 0, 0, 0],
+                [2, 0, 0, 0],
+            ],
+        }
+        locked_board = [
+            [2, 4, 8, 16],
+            [32, 64, 128, 256],
+            [512, 1024, 2, 4],
+            [8, 16, 32, 64],
+        ]
+        policy_cases = []
+        for boards in (movement_boards, merge_boards):
+            for action, board in boards.items():
+                policy_cases.append(
+                    {
+                        "variant": "direct_action",
+                        "board": board,
+                        "response": f"<action>{action}</action>",
+                        "response_length_tokens": 3,
+                        "truncated": False,
+                    }
+                )
+        for action in ("LEFT", "RIGHT", "UP", "DOWN"):
+            policy_cases.append(
+                {
+                    "variant": "direct_action",
+                    "board": locked_board,
+                    "response": f"<action>{action}</action>",
+                    "response_length_tokens": 3,
+                    "truncated": False,
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config_path = root / "config.json"
+            output_directory = root / "run"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "experiment_name": "canonical-policy-legality",
+                        "seed": 2048,
+                        "total_steps": len(policy_cases),
+                        "fixture": {"policy_cases": policy_cases},
+                        "telemetry": {"wandb_project": "2048llm-fixture"},
+                    }
+                )
+            )
+
+            completed = self.run_runner(
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(
+                [event["valid_action"] for event in events],
+                [True] * 8 + [False] * 4,
+            )
+            self.assertEqual(
+                [event["policy_failure_reason"] for event in events],
+                [None] * 8 + ["illegal_action"] * 4,
+            )
+            self.assertEqual(
+                events[-1]["change_making_actions"],
+                [],
+            )
 
 
 if __name__ == "__main__":

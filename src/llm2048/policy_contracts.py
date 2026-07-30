@@ -12,6 +12,7 @@ Action = Literal["LEFT", "RIGHT", "UP", "DOWN"]
 PolicyVariant = Literal["direct_action", "reasoning"]
 
 ACTIONS: frozenset[str] = frozenset({"LEFT", "RIGHT", "UP", "DOWN"})
+ACTION_ORDER: tuple[Action, ...] = ("LEFT", "RIGHT", "UP", "DOWN")
 ACTION_ENVELOPE = "<action>ACTION</action>"
 REASONING_ENVELOPE = (
     "<think>POLICY_REASONING_TRACE</think><action>ACTION</action>"
@@ -41,6 +42,54 @@ class PolicyContractResult:
         return self.policy_failure_reason is not None
 
 
+def change_making_actions(board: Sequence[Sequence[int]]) -> list[Action]:
+    """Return actions that move or merge a tile, without spawning a new tile."""
+    return [
+        action
+        for action in ACTION_ORDER
+        if _board_after_action(board, action) != [list(row) for row in board]
+    ]
+
+
+def _board_after_action(
+    board: Sequence[Sequence[int]],
+    action: Action,
+) -> list[list[int]]:
+    if action in ("LEFT", "RIGHT"):
+        rows = [list(row) for row in board]
+        if action == "RIGHT":
+            rows = [list(reversed(row)) for row in rows]
+        moved_rows = [_slide_and_merge(row) for row in rows]
+        if action == "RIGHT":
+            moved_rows = [list(reversed(row)) for row in moved_rows]
+        return moved_rows
+
+    columns = [[board[row][column] for row in range(4)] for column in range(4)]
+    if action == "DOWN":
+        columns = [list(reversed(column)) for column in columns]
+    moved_columns = [_slide_and_merge(column) for column in columns]
+    if action == "DOWN":
+        moved_columns = [list(reversed(column)) for column in moved_columns]
+    return [
+        [moved_columns[column][row] for column in range(4)]
+        for row in range(4)
+    ]
+
+
+def _slide_and_merge(line: Sequence[int]) -> list[int]:
+    tiles = [tile for tile in line if tile != 0]
+    merged: list[int] = []
+    index = 0
+    while index < len(tiles):
+        if index + 1 < len(tiles) and tiles[index] == tiles[index + 1]:
+            merged.append(tiles[index] * 2)
+            index += 2
+        else:
+            merged.append(tiles[index])
+            index += 1
+    return merged + [0] * (4 - len(merged))
+
+
 def build_policy_prompt(
     variant: PolicyVariant,
     board: Sequence[Sequence[int]],
@@ -68,7 +117,7 @@ def enforce_policy_response(
     variant: PolicyVariant,
     response: str,
     truncated: bool,
-    legal_actions: Sequence[str],
+    board_change_actions: Sequence[str],
 ) -> PolicyContractResult:
     """Parse one response without retrying, repairing, or masking its action."""
     if truncated:
@@ -94,14 +143,19 @@ def enforce_policy_response(
         contract_match = _REASONING_PATTERN.fullmatch(response)
         if contract_match is not None:
             reasoning_trace = contract_match.group("trace")
-            if re.search(r"[A-Za-z]", reasoning_trace) is None:
-                contract_match = None
+            has_ascii_letter = re.search(r"[A-Za-z]", reasoning_trace) is not None
+            has_non_ascii_letter = any(
+                character.isalpha() and not character.isascii()
+                for character in reasoning_trace
+            )
+            if not has_ascii_letter or has_non_ascii_letter:
+                return _failure("non_english_reasoning_trace")
 
     if contract_match is None:
         return _failure("malformed_response")
 
     action = cast(Action, action_text)
-    if action not in legal_actions:
+    if action not in board_change_actions:
         return PolicyContractResult(
             action=action,
             parsed=True,

@@ -22,6 +22,7 @@ from llm2048.policy_contracts import (
     REASONING_MAX_GENERATION_TOKENS,
     PolicyVariant,
     build_policy_prompt,
+    change_making_actions,
     enforce_policy_response,
 )
 
@@ -37,7 +38,6 @@ class PolicyFixtureCase:
     response: str
     response_length_tokens: int
     truncated: bool
-    legal_actions: list[str]
 
     def resolved(self) -> dict[str, Any]:
         return {
@@ -46,7 +46,6 @@ class PolicyFixtureCase:
             "response": self.response,
             "response_length_tokens": self.response_length_tokens,
             "truncated": self.truncated,
-            "legal_actions": self.legal_actions,
         }
 
 
@@ -122,19 +121,6 @@ def _load_policy_cases(
         truncated = raw_case.get("truncated")
         if not isinstance(truncated, bool):
             raise ConfigurationError(f"{field}.truncated must be a boolean")
-        legal_actions = raw_case.get("legal_actions")
-        if (
-            not isinstance(legal_actions, list)
-            or any(
-                not isinstance(action, str) or action not in ACTIONS
-                for action in legal_actions
-            )
-            or len(set(legal_actions)) != len(legal_actions)
-        ):
-            raise ConfigurationError(
-                f"{field}.legal_actions must contain unique supported actions"
-            )
-
         cases.append(
             PolicyFixtureCase(
                 variant=variant,
@@ -142,7 +128,6 @@ def _load_policy_cases(
                 response=response,
                 response_length_tokens=response_length_tokens,
                 truncated=truncated,
-                legal_actions=legal_actions,
             )
         )
     return cases
@@ -507,16 +492,17 @@ def _policy_event(
     reward_total: float,
     step: int,
 ) -> dict[str, Any]:
+    board_change_actions = change_making_actions(case.board)
     contract = enforce_policy_response(
         variant=case.variant,
         response=case.response,
         truncated=case.truncated,
-        legal_actions=case.legal_actions,
+        board_change_actions=board_change_actions,
     )
     return {
         "action": contract.action,
         "board": case.board,
-        "legal_actions": case.legal_actions,
+        "change_making_actions": board_change_actions,
         "max_generation_tokens": (
             REASONING_MAX_GENERATION_TOKENS
             if case.variant == "reasoning"

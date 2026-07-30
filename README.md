@@ -36,13 +36,15 @@ Run the deterministic Policy Response contract fixture:
 
 Each `fixture.policy_cases` entry is one independent Markov Policy decision.
 It supplies the latest 4×4 board, captured response and token length,
-truncation status, and deterministic change-making actions. The prompt never
-receives the latter. Direct-action responses must be exactly
+and truncation status. The runner derives change-making actions canonically
+from tile movement and merges; it does not spawn tiles, calculate scores, or
+put those actions in the prompt. Direct-action responses must be exactly
 `<action>ACTION</action>`; Reasoning responses must be exactly
 `<think>POLICY_REASONING_TRACE</think><action>ACTION</action>` and use a fixed
-96-token maximum generation budget. `result.json` reports parse, truncation,
-illegal-action, valid-action, Policy Failure, and mean response-length metrics
-for each variant.
+96-token maximum generation budget. Policy Reasoning Traces require an ASCII
+letter and reject non-ASCII alphabetic characters. `result.json` reports
+parse, truncation, illegal-action, valid-action, Policy Failure, and mean
+response-length metrics for each variant.
 
 Run the CLI contract tests:
 
