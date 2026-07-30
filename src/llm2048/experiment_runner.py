@@ -1557,16 +1557,47 @@ def _parser() -> argparse.ArgumentParser:
     configuration = parser.add_mutually_exclusive_group(required=True)
     configuration.add_argument("--config", type=Path)
     configuration.add_argument("--teacher-corpus-config", type=Path)
+    configuration.add_argument("--grpo-smoke-config", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stop-after-step", type=int)
+    parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parsed = _parser().parse_args(arguments)
     try:
-        if parsed.teacher_corpus_config is not None:
+        if parsed.grpo_smoke_config is not None:
+            if parsed.resume is not None or parsed.stop_after_step is not None:
+                raise ConfigurationError(
+                    "--resume and --stop-after-step are not supported for GRPO smoke runs"
+                )
+            from llm2048.grpo_smoke import (
+                GrpoSmokeConfig,
+                GrpoSmokeConfigurationError,
+                run_real_smoke,
+            )
+
+            try:
+                smoke_config, smoke_config_sha256 = GrpoSmokeConfig.load(
+                    parsed.grpo_smoke_config
+                )
+            except GrpoSmokeConfigurationError as error:
+                raise ConfigurationError(str(error)) from error
+            if not parsed.dry_run:
+                result = run_real_smoke(
+                    config=smoke_config,
+                    input_sha256=smoke_config_sha256,
+                    output_directory=parsed.output_dir,
+                )
+            else:
+                result = {"status": "validated", **smoke_config.resolved()}
+        elif parsed.teacher_corpus_config is not None:
+            if parsed.dry_run:
+                raise ConfigurationError(
+                    "--dry-run is supported only for GRPO smoke runs"
+                )
             if parsed.resume is not None or parsed.stop_after_step is not None:
                 raise ConfigurationError(
                     "--resume and --stop-after-step are not supported for corpus exports"
@@ -1576,6 +1607,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 output_directory=parsed.output_dir,
             )
         else:
+            if parsed.dry_run:
+                raise ConfigurationError(
+                    "--dry-run is supported only for GRPO smoke runs"
+                )
             result = run_experiment(
                 config_path=parsed.config,
                 output_directory=parsed.output_dir,

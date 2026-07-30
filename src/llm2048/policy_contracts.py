@@ -101,14 +101,18 @@ def build_policy_prompt(
             "You are the Direct-action Policy for 2048.\n"
             "Board (4x4 JSON array; 0 means empty):\n"
             f"{compact_board}\n"
-            f"Return exactly one action in this form: {ACTION_ENVELOPE}."
+            "Return exactly one of these strings and no other text: "
+            "<action>LEFT</action>, <action>RIGHT</action>, "
+            "<action>UP</action>, or <action>DOWN</action>."
         )
     return (
         "You are the Reasoning Policy for 2048.\n"
         "Board (4x4 JSON array; 0 means empty):\n"
         f"{compact_board}\n"
-        "Write a concise English Policy Reasoning Trace and then exactly one "
-        f"action in this form: {REASONING_ENVELOPE}."
+        "Return a concise English Policy Reasoning Trace inside "
+        "<think>...</think>, immediately followed by exactly one of "
+        "<action>LEFT</action>, <action>RIGHT</action>, "
+        "<action>UP</action>, or <action>DOWN</action>. Return no other text."
     )
 
 

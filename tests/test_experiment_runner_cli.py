@@ -29,6 +29,9 @@ TEACHER_GUIDED_FIXTURE = (
 TEACHER_REWARD_MANIFEST = (
     REPO_ROOT / "tests" / "fixtures" / "teacher_corpus_reward_manifest.json"
 )
+GRPO_SMOKE_FIXTURE = (
+    REPO_ROOT / "configs" / "qwen35_4b_grpo_smoke.json"
+)
 FIXTURE_BOARD = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
@@ -218,6 +221,102 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                 ],
                 [(4, 0.625)],
             )
+
+    def test_grpo_smoke_dry_run_resolves_the_safe_real_training_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "must-not-exist"
+
+            completed = self.run_runner(
+                "--grpo-smoke-config",
+                str(GRPO_SMOKE_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+                "--dry-run",
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            plan = json.loads(completed.stdout)
+            self.assertEqual(plan["status"], "validated")
+            self.assertEqual(
+                plan["model"],
+                {
+                    "fast_inference": False,
+                    "id": "Qwen/Qwen3.5-4B",
+                    "load_in_4bit": False,
+                    "max_sequence_length": 256,
+                    "precision": "bf16",
+                    "revision": "c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97",
+                    "text_only": True,
+                },
+            )
+            self.assertEqual(
+                plan["lora"],
+                {
+                    "alpha": 64,
+                    "dropout": 0.0,
+                    "finetune_attention_modules": True,
+                    "finetune_language_layers": True,
+                    "finetune_mlp_modules": True,
+                    "finetune_vision_layers": False,
+                    "gradient_checkpointing": "unsloth",
+                    "rank": 64,
+                },
+            )
+            self.assertEqual(
+                plan["grpo"],
+                {
+                    "generation_batch_size": 4,
+                    "gradient_accumulation_steps": 4,
+                    "learning_rate": 5e-6,
+                    "loss_type": "grpo",
+                    "mask_truncated_completions": False,
+                    "max_completion_length": 96,
+                    "max_prompt_length": 160,
+                    "max_steps": 1,
+                    "num_generations": 4,
+                    "optimizer": "adamw_8bit",
+                    "per_device_train_batch_size": 1,
+                    "safe_group8_reserved_headroom_gib": 2.0,
+                    "temperature": 1.0,
+                    "beta": 0.0,
+                    "trainer": "trl.GRPOTrainer",
+                    "use_vllm": False,
+                },
+            )
+            self.assertEqual(
+                plan["telemetry"],
+                {
+                    "tensorboard": True,
+                    "upload_model_checkpoints": False,
+                    "wandb_entity": "auto",
+                    "wandb_mode": "online",
+                    "wandb_project": "2048llm-feasibility",
+                    "wandb_project_visibility": "private",
+                },
+            )
+            self.assertFalse(output_directory.exists())
+
+    def test_real_grpo_smoke_fails_closed_when_wandb_credential_is_missing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "must-not-exist"
+
+            completed = self.run_runner(
+                "--grpo-smoke-config",
+                str(GRPO_SMOKE_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(
+                completed.stderr,
+                "experiment runner error: WANDB_API_KEY is required for the "
+                "private online W&B smoke run\n",
+            )
+            self.assertNotIn("api_key", completed.stdout.lower())
+            self.assertFalse(output_directory.exists())
 
     def test_resume_continues_without_repeating_completed_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -452,13 +551,25 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             self.assertTrue(direct_events[0]["valid_action"])
             self.assertFalse(direct_events[0]["policy_failure"])
             self.assertNotIn("<think>", direct_events[0]["prompt"])
+            self.assertNotIn(
+                "<action>ACTION</action>",
+                direct_events[0]["prompt"],
+            )
+            self.assertIn(
+                "<action>LEFT</action>, <action>RIGHT</action>",
+                direct_events[0]["prompt"],
+            )
             self.assertEqual(
                 direct_events[0]["response"],
                 "<action>LEFT</action>",
             )
 
+            self.assertNotIn(
+                "<action>ACTION</action>",
+                reasoning_events[0]["prompt"],
+            )
             self.assertIn(
-                "<think>POLICY_REASONING_TRACE</think><action>ACTION</action>",
+                "<think>...</think>",
                 reasoning_events[0]["prompt"],
             )
             self.assertEqual(reasoning_events[0]["max_generation_tokens"], 96)
