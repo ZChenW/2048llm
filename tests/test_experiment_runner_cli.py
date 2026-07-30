@@ -62,6 +62,7 @@ class ExperimentRunnerCliTests(unittest.TestCase):
         environment["TRANSFORMERS_OFFLINE"] = "1"
         environment["WANDB_MODE"] = "offline"
         environment["WANDB_SILENT"] = "true"
+        environment.pop("WANDB_API_KEY", None)
 
         return subprocess.run(
             [
