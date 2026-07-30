@@ -147,6 +147,25 @@ def _install_art_registry_compatibility(
     return True
 
 
+def _training_completion_token_count(choice: Any) -> int:
+    """Validate the token logprobs consumed by ART's maintained tokenizer."""
+    logprobs = getattr(choice, "logprobs", None)
+    content = getattr(logprobs, "content", None)
+    if not isinstance(content, list) or not content:
+        raise BackendSpikePreflightError(
+            "ART vLLM response omitted generated-token logprobs"
+        )
+    if any(
+        not isinstance(getattr(token, "token", None), str)
+        or not token.token.startswith("token_id:")
+        for token in content
+    ):
+        raise BackendSpikePreflightError(
+            "ART vLLM did not return logprob tokens as token IDs"
+        )
+    return len(content)
+
+
 async def _rollout(
     *,
     art: Any,
@@ -168,31 +187,16 @@ async def _rollout(
             max_completion_tokens=config.rollout.max_completion_tokens,
             temperature=config.rollout.temperature,
             top_p=config.rollout.top_p,
+            logprobs=True,
             extra_body={
                 "top_k": config.rollout.top_k,
-                "return_token_ids": True,
                 "return_tokens_as_token_ids": True,
                 "chat_template_kwargs": {"enable_thinking": False},
             },
         )
         choice = completion.choices[0]
-        payload = completion.model_dump(mode="python")
-        prompt_token_ids = payload.get("prompt_token_ids")
-        token_ids = payload["choices"][0].get("token_ids")
-        if (
-            choice.model_extra is None
-            or not isinstance(prompt_token_ids, list)
-            or not prompt_token_ids
-            or not isinstance(token_ids, list)
-            or not token_ids
-        ):
-            raise BackendSpikePreflightError(
-                "ART vLLM response omitted training token-id metadata"
-            )
-        choice.model_extra["prompt_token_ids"] = prompt_token_ids
-        choice.model_extra["token_ids"] = token_ids
         content = choice.message.content or ""
-        completion_tokens += len(choice.model_extra["token_ids"])
+        completion_tokens += _training_completion_token_count(choice)
         history = history_class(
             messages_and_choices=[
                 {"role": "user", "content": prompt},

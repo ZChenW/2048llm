@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from llm2048.stage2_backend_spike import (
@@ -21,7 +22,10 @@ from llm2048.stage2_backend_spike import (
 )
 from llm2048.policy_contracts import change_making_actions
 import llm2048.stage2_trl_backend as trl_backend
-from llm2048.stage2_art_backend import _install_art_registry_compatibility
+from llm2048.stage2_art_backend import (
+    _install_art_registry_compatibility,
+    _training_completion_token_count,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -161,6 +165,36 @@ class TrlEnvironmentContractTests(unittest.TestCase):
 
 
 class ArtifactContractTests(unittest.TestCase):
+    def test_art_training_requires_token_id_logprobs(self) -> None:
+        valid = SimpleNamespace(
+            logprobs=SimpleNamespace(
+                content=[
+                    SimpleNamespace(token="token_id:17"),
+                    SimpleNamespace(token="token_id:23"),
+                ]
+            )
+        )
+        self.assertEqual(_training_completion_token_count(valid), 2)
+
+        with self.assertRaisesRegex(
+            BackendSpikePreflightError,
+            "omitted generated-token logprobs",
+        ):
+            _training_completion_token_count(
+                SimpleNamespace(logprobs=None)
+            )
+        with self.assertRaisesRegex(
+            BackendSpikePreflightError,
+            "did not return logprob tokens as token IDs",
+        ):
+            _training_completion_token_count(
+                SimpleNamespace(
+                    logprobs=SimpleNamespace(
+                        content=[SimpleNamespace(token="plain text")]
+                    )
+                )
+            )
+
     def test_art_registry_compatibility_exposes_only_frozen_targets(
         self,
     ) -> None:
