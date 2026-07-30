@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 import json
+import math
 import os
 from pathlib import Path
 import platform
 import subprocess
 import sys
 import time
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 
 from llm2048.game import Game2048
 from llm2048.policy_contracts import (
@@ -28,6 +29,11 @@ from llm2048.policy_contracts import (
     enforce_policy_response,
 )
 from llm2048.teacher_corpus import CorpusError, export_teacher_corpus
+from llm2048.teacher_guided_rewards import (
+    TeacherGuidedCompletion,
+    TeacherGuidedReward,
+    teacher_guided_reward_callback,
+)
 
 
 class ConfigurationError(ValueError):
@@ -84,6 +90,46 @@ class EnvironmentGameFixture:
                 if self.responses is not None
                 else {"action_preferences": self.action_preferences}
             ),
+        }
+
+
+@dataclass(frozen=True)
+class TeacherGuidedRolloutGroupFixture:
+    group_size: int
+    corpus_manifest_path: str
+    corpus_manifest_sha256: str
+    tau: float
+    board: list[list[int]]
+    teacher_action_scores: dict[Action, float | None]
+    teacher_action: Action
+    candidates: list[PolicyFixtureCase]
+
+    def resolved(self) -> dict[str, Any]:
+        return {
+            "group_size": self.group_size,
+            "corpus_manifest": {
+                "path": self.corpus_manifest_path,
+                "sha256": self.corpus_manifest_sha256,
+                "calibration": {
+                    "method": "median_positive_margin",
+                    "scope": "train",
+                    "tau": self.tau,
+                },
+            },
+            "board": self.board,
+            "teacher_judgment": {
+                "action_scores": self.teacher_action_scores,
+                "teacher_action": self.teacher_action,
+            },
+            "candidates": [
+                {
+                    "variant": case.variant,
+                    "response": case.response,
+                    "response_length_tokens": case.response_length_tokens,
+                    "truncated": case.truncated,
+                }
+                for case in self.candidates
+            ],
         }
 
 
@@ -252,6 +298,184 @@ def _load_environment_game(
     )
 
 
+def _finite_number(value: Any, field: str) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+    ):
+        raise ConfigurationError(f"{field} must be a finite number")
+    return float(value)
+
+
+def _load_teacher_guided_group(
+    raw_group: Any,
+    *,
+    config_path: Path,
+    total_steps: int,
+) -> TeacherGuidedRolloutGroupFixture:
+    field = "fixture.teacher_guided_rollout_group"
+    if not isinstance(raw_group, dict):
+        raise ConfigurationError(f"{field} must be an object")
+    expected_keys = {
+        "group_size",
+        "corpus_manifest",
+        "board",
+        "teacher_judgment",
+        "candidates",
+    }
+    if set(raw_group) != expected_keys:
+        raise ConfigurationError(
+            f"{field} must contain exactly {', '.join(sorted(expected_keys))}"
+        )
+
+    group_size = raw_group["group_size"]
+    if (
+        not isinstance(group_size, int)
+        or isinstance(group_size, bool)
+        or group_size <= 0
+    ):
+        raise ConfigurationError(f"{field}.group_size must be a positive integer")
+    if group_size != total_steps:
+        raise ConfigurationError(
+            f"{field}.group_size must equal total_steps"
+        )
+
+    board = _validate_policy_board(raw_group["board"], f"{field}.board")
+    raw_candidates = raw_group["candidates"]
+    if not isinstance(raw_candidates, list) or len(raw_candidates) != group_size:
+        raise ConfigurationError(
+            f"{field}.candidates must match the configured group_size"
+        )
+    candidate_keys = {
+        "variant",
+        "response",
+        "response_length_tokens",
+        "truncated",
+    }
+    for index, candidate in enumerate(raw_candidates):
+        if not isinstance(candidate, dict) or set(candidate) != candidate_keys:
+            raise ConfigurationError(
+                f"{field}.candidates[{index}] must contain exactly "
+                f"{', '.join(sorted(candidate_keys))}"
+            )
+    cases = _load_policy_cases(
+        [
+            {
+                **candidate,
+                "board": board,
+            }
+            for candidate in raw_candidates
+        ],
+        total_steps,
+    )
+
+    manifest_display = raw_group["corpus_manifest"]
+    if not isinstance(manifest_display, str) or not manifest_display:
+        raise ConfigurationError(f"{field}.corpus_manifest must be a path string")
+    manifest_path = Path(manifest_display)
+    if not manifest_path.is_absolute():
+        manifest_path = config_path.resolve().parent / manifest_path
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot read Teacher Policy Corpus manifest: {error}"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise ConfigurationError(
+            f"Teacher Policy Corpus manifest is not valid JSON: {error}"
+        ) from error
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise ConfigurationError(
+            "Teacher Policy Corpus manifest schema_version must be 1"
+        )
+    calibration = manifest.get("calibration")
+    if not isinstance(calibration, dict):
+        raise ConfigurationError(
+            "Teacher Policy Corpus manifest calibration must be an object"
+        )
+    if (
+        calibration.get("method") != "median_positive_margin"
+        or calibration.get("scope") != "train"
+    ):
+        raise ConfigurationError(
+            "Teacher Policy Corpus manifest must use train "
+            "median_positive_margin calibration"
+        )
+    tau = _finite_number(
+        calibration.get("tau"),
+        "Teacher Policy Corpus manifest calibration.tau",
+    )
+    if tau <= 0:
+        raise ConfigurationError(
+            "Teacher Policy Corpus manifest calibration.tau must be positive"
+        )
+
+    judgment = raw_group["teacher_judgment"]
+    if not isinstance(judgment, dict) or set(judgment) != {
+        "action_scores",
+        "teacher_action",
+    }:
+        raise ConfigurationError(
+            f"{field}.teacher_judgment must contain exactly "
+            "action_scores and teacher_action"
+        )
+    raw_scores = judgment["action_scores"]
+    corpus_actions = ("up", "down", "left", "right")
+    if not isinstance(raw_scores, dict) or set(raw_scores) != set(corpus_actions):
+        raise ConfigurationError(
+            f"{field}.teacher_judgment.action_scores must contain "
+            "up, down, left, and right"
+        )
+    legal_actions = set(change_making_actions(board))
+    scores: dict[Action, float | None] = {}
+    for corpus_action in corpus_actions:
+        action = cast(Action, corpus_action.upper())
+        raw_score = raw_scores[corpus_action]
+        if action in legal_actions:
+            scores[action] = _finite_number(
+                raw_score,
+                f"{field}.teacher_judgment.action_scores.{corpus_action}",
+            )
+        elif raw_score is not None:
+            raise ConfigurationError(
+                f"{field}.teacher_judgment.action_scores.{corpus_action} "
+                "must be null for an illegal action"
+            )
+        else:
+            scores[action] = None
+    raw_teacher_action = judgment["teacher_action"]
+    if raw_teacher_action not in corpus_actions:
+        raise ConfigurationError(
+            f"{field}.teacher_judgment.teacher_action must be "
+            "up, down, left, or right"
+        )
+    teacher_action = cast(Action, raw_teacher_action.upper())
+    teacher_score = scores[teacher_action]
+    legal_scores = [score for score in scores.values() if score is not None]
+    if not legal_scores:
+        raise ConfigurationError(
+            f"{field}.board must have at least one legal action"
+        )
+    if teacher_score is None or teacher_score != max(legal_scores):
+        raise ConfigurationError(
+            f"{field}.teacher_judgment.teacher_action must be top-ranked"
+        )
+
+    return TeacherGuidedRolloutGroupFixture(
+        group_size=group_size,
+        corpus_manifest_path=manifest_display,
+        corpus_manifest_sha256=sha256(manifest_bytes).hexdigest(),
+        tau=tau,
+        board=board,
+        teacher_action_scores=scores,
+        teacher_action=teacher_action,
+        candidates=cases,
+    )
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     schema_version: int
@@ -262,6 +486,7 @@ class ExperimentConfig:
     policy_actions: list[str] | None
     policy_cases: list[PolicyFixtureCase] | None
     environment_game: EnvironmentGameFixture | None
+    teacher_guided_rollout_group: TeacherGuidedRolloutGroupFixture | None
     rewards: list[float]
     wandb_project: str
 
@@ -312,22 +537,51 @@ class ExperimentConfig:
 
         total_steps = raw["total_steps"]
         environment_game_raw = fixture.get("environment_game")
+        teacher_guided_raw = fixture.get("teacher_guided_rollout_group")
         policy_cases_raw = fixture.get("policy_cases")
         if environment_game_raw is not None:
+            if teacher_guided_raw is not None or policy_cases_raw is not None:
+                raise ConfigurationError(
+                    "fixture must not combine environment_game with "
+                    "policy_cases or teacher_guided_rollout_group"
+                )
             environment_game = _load_environment_game(
                 environment_game_raw,
                 total_steps,
             )
+            teacher_guided_rollout_group = None
             policy_cases = None
+            board = None
+            policy_actions = None
+        elif teacher_guided_raw is not None:
+            if set(fixture) != {"teacher_guided_rollout_group"}:
+                raise ConfigurationError(
+                    "fixture.teacher_guided_rollout_group must be the only "
+                    "Teacher-guided fixture input"
+                )
+            if policy_cases_raw is not None:
+                raise ConfigurationError(
+                    "fixture must not combine policy_cases with "
+                    "teacher_guided_rollout_group"
+                )
+            teacher_guided_rollout_group = _load_teacher_guided_group(
+                teacher_guided_raw,
+                config_path=path,
+                total_steps=total_steps,
+            )
+            environment_game = None
+            policy_cases = teacher_guided_rollout_group.candidates
             board = None
             policy_actions = None
         elif policy_cases_raw is not None:
             environment_game = None
+            teacher_guided_rollout_group = None
             policy_cases = _load_policy_cases(policy_cases_raw, total_steps)
             board = None
             policy_actions = None
         else:
             environment_game = None
+            teacher_guided_rollout_group = None
             policy_cases = None
             board = _validate_board(fixture.get("board"), "fixture.board")
             policy_actions = fixture.get("policy_actions")
@@ -354,7 +608,13 @@ class ExperimentConfig:
                 )
 
         rewards = fixture.get("rewards")
-        if rewards is None and (
+        if teacher_guided_rollout_group is not None:
+            if rewards is not None:
+                raise ConfigurationError(
+                    "fixture.rewards is computed for a Teacher-guided Rollout Group"
+                )
+            rewards = [0.0] * total_steps
+        elif rewards is None and (
             policy_cases is not None or environment_game is not None
         ):
             rewards = [0.0] * total_steps
@@ -387,6 +647,7 @@ class ExperimentConfig:
                 policy_actions=policy_actions,
                 policy_cases=policy_cases,
                 environment_game=environment_game,
+                teacher_guided_rollout_group=teacher_guided_rollout_group,
                 rewards=[float(reward) for reward in rewards],
                 wandb_project=wandb_project,
             ),
@@ -399,6 +660,12 @@ class ExperimentConfig:
             fixture = {
                 "environment_game": self.environment_game.resolved(),
                 "rewards": self.rewards,
+            }
+        elif self.teacher_guided_rollout_group is not None:
+            fixture = {
+                "teacher_guided_rollout_group": (
+                    self.teacher_guided_rollout_group.resolved()
+                )
             }
         elif self.policy_cases is None:
             fixture = {
@@ -593,21 +860,71 @@ class Telemetry:
         valid_action: bool,
         policy_failure: bool,
         response_length_tokens: int,
+        teacher_guided_score: TeacherGuidedReward | None = None,
     ) -> None:
         prefix = f"policy/{variant}"
-        self._log(
-            step,
-            {
-                "train/reward": reward,
-                "train/reward_total": reward_total,
-                f"{prefix}/parsed": float(parsed),
-                f"{prefix}/truncated": float(truncated),
-                f"{prefix}/illegal_action": float(illegal_action),
-                f"{prefix}/valid_action": float(valid_action),
-                f"{prefix}/policy_failure": float(policy_failure),
-                f"{prefix}/response_length_tokens": float(response_length_tokens),
-            },
-        )
+        values = {
+            "train/reward": reward,
+            "train/reward_total": reward_total,
+            f"{prefix}/parsed": float(parsed),
+            f"{prefix}/truncated": float(truncated),
+            f"{prefix}/illegal_action": float(illegal_action),
+            f"{prefix}/valid_action": float(valid_action),
+            f"{prefix}/policy_failure": float(policy_failure),
+            f"{prefix}/response_length_tokens": float(response_length_tokens),
+        }
+        if teacher_guided_score is not None:
+            components = teacher_guided_score.components
+            values.update(
+                {
+                    "teacher_guided/action_quality": components.action_quality,
+                    "teacher_guided/best_action_bonus": (
+                        components.best_action_bonus
+                    ),
+                    "teacher_guided/illegal_action_penalty": (
+                        components.illegal_action_penalty
+                    ),
+                    "teacher_guided/policy_failure_penalty": (
+                        components.policy_failure_penalty
+                    ),
+                }
+            )
+            if teacher_guided_score.regret is not None:
+                values["teacher_guided/regret"] = teacher_guided_score.regret
+        self._log(step, values)
+
+    def log_teacher_guided_group(
+        self,
+        step: int,
+        *,
+        mean_reward: float,
+        metrics: dict[str, Any],
+    ) -> None:
+        component_means = metrics["reward_component_means"]
+        values = {
+            "teacher_guided/group/mean_reward": mean_reward,
+            "teacher_guided/group/action_quality_mean": component_means[
+                "action_quality"
+            ],
+            "teacher_guided/group/best_action_bonus_mean": component_means[
+                "best_action_bonus"
+            ],
+            "teacher_guided/group/illegal_action_penalty_mean": component_means[
+                "illegal_action_penalty"
+            ],
+            "teacher_guided/group/policy_failure_penalty_mean": component_means[
+                "policy_failure_penalty"
+            ],
+            "teacher_guided/group/teacher_action_agreement_rate": metrics[
+                "teacher_action_agreement_rate"
+            ],
+        }
+        valid_legal_mean_regret = metrics["valid_legal_mean_regret"]
+        if valid_legal_mean_regret is not None:
+            values["teacher_guided/group/valid_legal_mean_regret"] = (
+                valid_legal_mean_regret
+            )
+        self._log(step, values)
 
     def close(self) -> tuple[Path, Path]:
         self._event_writer.close()
@@ -665,6 +982,40 @@ def _policy_event(
         "valid_action": contract.valid_action,
         "variant": case.variant,
     }
+
+
+def _teacher_guided_policy_event(
+    case: PolicyFixtureCase,
+    score: TeacherGuidedReward,
+    *,
+    group: TeacherGuidedRolloutGroupFixture,
+    reward_total: float,
+    step: int,
+) -> dict[str, Any]:
+    event = _policy_event(
+        case,
+        reward=score.total,
+        reward_total=reward_total,
+        step=step,
+    )
+    event.update(
+        {
+            "action": score.contract.action,
+            "parsed": score.contract.parsed,
+            "policy_failure": score.contract.policy_failure,
+            "policy_failure_reason": score.contract.policy_failure_reason,
+            "policy_reasoning_trace": score.contract.policy_reasoning_trace,
+            "valid_action": score.contract.valid_action,
+            "teacher_action": group.teacher_action,
+            "teacher_action_scores": group.teacher_action_scores,
+            "selected_action_score": score.selected_action_score,
+            "teacher_top1_score": score.teacher_top1_score,
+            "regret": score.regret,
+            "reward_components": score.components.resolved(),
+            "teacher_margin_scale": group.tau,
+        }
+    )
+    return event
 
 
 def _policy_metrics(events_path: Path) -> dict[str, dict[str, float | int]]:
@@ -792,6 +1143,42 @@ def _replay_environment_prefix(
     return game
 
 
+def _teacher_guided_group_metrics(
+    scores: Sequence[TeacherGuidedReward],
+    group: TeacherGuidedRolloutGroupFixture,
+) -> dict[str, Any]:
+    regrets = [score.regret for score in scores if score.regret is not None]
+    return {
+        "group_size": group.group_size,
+        "reward_component_means": {
+            component: (
+                sum(
+                    getattr(score.components, component)
+                    for score in scores
+                )
+                / group.group_size
+            )
+            for component in (
+                "action_quality",
+                "best_action_bonus",
+                "illegal_action_penalty",
+                "policy_failure_penalty",
+            )
+        },
+        "teacher_action_agreement_rate": (
+            sum(
+                score.contract.action == group.teacher_action
+                for score in scores
+            )
+            / group.group_size
+        ),
+        "teacher_margin_scale": group.tau,
+        "valid_legal_mean_regret": (
+            sum(regrets) / len(regrets) if regrets else None
+        ),
+    }
+
+
 def run_experiment(
     config_path: Path,
     output_directory: Path,
@@ -800,6 +1187,24 @@ def run_experiment(
 ) -> dict[str, Any]:
     config, input_sha256 = ExperimentConfig.load(config_path)
     experiment_id = config.experiment_id()
+    teacher_guided_scores: list[TeacherGuidedReward] | None = None
+    if config.teacher_guided_rollout_group is not None:
+        group = config.teacher_guided_rollout_group
+        teacher_guided_scores = teacher_guided_reward_callback(
+            board=group.board,
+            completions=[
+                TeacherGuidedCompletion(
+                    variant=case.variant,
+                    response=case.response,
+                    truncated=case.truncated,
+                )
+                for case in group.candidates
+            ],
+            group_size=group.group_size,
+            teacher_action_scores=group.teacher_action_scores,
+            teacher_action=group.teacher_action,
+            tau=group.tau,
+        )
     output_directory.mkdir(parents=True, exist_ok=True)
 
     checkpoint_path = output_directory / "checkpoints" / "latest.json"
@@ -866,7 +1271,11 @@ def run_experiment(
     try:
         for zero_based_step in range(completed_steps, target_step):
             step = zero_based_step + 1
-            reward = config.rewards[zero_based_step]
+            reward = (
+                teacher_guided_scores[zero_based_step].total
+                if teacher_guided_scores is not None
+                else config.rewards[zero_based_step]
+            )
             reward_total += reward
             response_length_tokens: int | None = None
             event: dict[str, Any]
@@ -938,12 +1347,24 @@ def run_experiment(
                 }
             else:
                 case = config.policy_cases[zero_based_step]
-                event = _policy_event(
-                    case,
-                    reward=reward,
-                    reward_total=reward_total,
-                    step=step,
-                )
+                if (
+                    teacher_guided_scores is not None
+                    and config.teacher_guided_rollout_group is not None
+                ):
+                    event = _teacher_guided_policy_event(
+                        case,
+                        teacher_guided_scores[zero_based_step],
+                        group=config.teacher_guided_rollout_group,
+                        reward_total=reward_total,
+                        step=step,
+                    )
+                else:
+                    event = _policy_event(
+                        case,
+                        reward=reward,
+                        reward_total=reward_total,
+                        step=step,
+                    )
                 response_length_tokens = case.response_length_tokens
             _append_json_line(events_path, event)
             if config.policy_cases is None and game is None:
@@ -964,6 +1385,11 @@ def run_experiment(
                     valid_action=bool(event["valid_action"]),
                     policy_failure=bool(event["policy_failure"]),
                     response_length_tokens=response_length_tokens,
+                    teacher_guided_score=(
+                        teacher_guided_scores[zero_based_step]
+                        if teacher_guided_scores is not None
+                        else None
+                    ),
                 )
             completed_steps = step
             _write_json(
@@ -983,6 +1409,18 @@ def run_experiment(
             if termination_reason is not None:
                 break
         if completed_steps == config.total_steps:
+            if (
+                teacher_guided_scores is not None
+                and config.teacher_guided_rollout_group is not None
+            ):
+                telemetry.log_teacher_guided_group(
+                    completed_steps,
+                    mean_reward=reward_total / completed_steps,
+                    metrics=_teacher_guided_group_metrics(
+                        teacher_guided_scores,
+                        config.teacher_guided_rollout_group,
+                    ),
+                )
             telemetry.log_evaluation(completed_steps, reward_total / completed_steps)
     finally:
         wandb_directory, tensorboard_directory = telemetry.close()
@@ -1015,6 +1453,17 @@ def run_experiment(
             game,
             termination_reason,
             policy_failure,
+        )
+    if (
+        teacher_guided_scores is not None
+        and config.teacher_guided_rollout_group is not None
+        and completed_steps == config.total_steps
+    ):
+        result["teacher_guided_rollout_group"] = (
+            _teacher_guided_group_metrics(
+                teacher_guided_scores,
+                config.teacher_guided_rollout_group,
+            )
         )
     _write_json(result_path, result)
     _append_json_line(

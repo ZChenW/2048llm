@@ -71,6 +71,22 @@ move count, and complete RNG state; resume verifies the snapshot is exactly
 reachable by replaying the configured seed and prior responses before
 restoring it.
 
+Run the deterministic Teacher-guided Rollout Group fixture:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --config tests/fixtures/teacher_guided_rollout_group.json \
+  --output-dir runs/teacher-guided-rollout-group
+```
+
+The group configuration names one shared board, its configured candidate count,
+corpus-style Teacher action scores, and a Teacher Policy Corpus manifest. The
+runner reads the Teacher Margin Scale (`tau`) from that manifest, applies the
+strict Policy Response contract, and reports Action Quality Reward, best-action
+bonus, illegal-action penalty, and other Policy Failure penalty separately in
+run events, aggregate results, offline W&B, and TensorBoard.
+
 Run the CLI contract tests:
 
 ```bash

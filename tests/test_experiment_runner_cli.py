@@ -23,6 +23,12 @@ ENVIRONMENT_GAME_FIXTURE = (
 COMPLETE_ENVIRONMENT_GAME_FIXTURE = (
     REPO_ROOT / "tests" / "fixtures" / "environment_game_complete.json"
 )
+TEACHER_GUIDED_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "teacher_guided_rollout_group.json"
+)
+TEACHER_REWARD_MANIFEST = (
+    REPO_ROOT / "tests" / "fixtures" / "teacher_corpus_reward_manifest.json"
+)
 FIXTURE_BOARD = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
@@ -558,6 +564,306 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                     (16, 11.0),
                 ],
             )
+
+    def test_teacher_guided_reward_callback_scores_exact_best_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+
+            completed = self.run_runner(
+                "--config",
+                str(TEACHER_GUIDED_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            event = json.loads(
+                (output_directory / "events.jsonl").read_text().splitlines()[0]
+            )
+            self.assertEqual(event["action"], "UP")
+            self.assertEqual(event["teacher_action"], "UP")
+            self.assertEqual(event["selected_action_score"], 10.0)
+            self.assertEqual(event["teacher_top1_score"], 10.0)
+            self.assertEqual(event["regret"], 0.0)
+            self.assertEqual(
+                event["reward_components"],
+                {
+                    "action_quality": 1.0,
+                    "best_action_bonus": 0.1,
+                    "illegal_action_penalty": 0.0,
+                    "policy_failure_penalty": 0.0,
+                },
+            )
+            self.assertEqual(event["reward"], 1.1)
+
+    def test_teacher_guided_group_preserves_soft_legal_action_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+
+            completed = self.run_runner(
+                "--config",
+                str(TEACHER_GUIDED_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            legal_events = events[:3]
+            self.assertEqual(
+                [event["action"] for event in legal_events],
+                ["UP", "LEFT", "RIGHT"],
+            )
+            self.assertEqual(
+                [event["regret"] for event in legal_events],
+                [0.0, 0.1999999999999993, 3.0],
+            )
+            self.assertEqual(
+                [
+                    event["reward_components"]["action_quality"]
+                    for event in legal_events
+                ],
+                [1.0, 0.9048374180359599, 0.22313016014842982],
+            )
+            self.assertEqual(
+                [event["reward"] for event in legal_events],
+                [1.1, 0.9048374180359599, 0.22313016014842982],
+            )
+            self.assertGreater(events[1]["reward"], events[2]["reward"])
+            self.assertLess(events[1]["reward"], events[0]["reward"])
+
+    def test_teacher_guided_group_applies_distinct_failure_penalties(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+
+            completed = self.run_runner(
+                "--config",
+                str(TEACHER_GUIDED_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(
+                [event["policy_failure_reason"] for event in events[3:]],
+                [
+                    "illegal_action",
+                    "malformed_response",
+                    "truncated_response",
+                ],
+            )
+            self.assertEqual(
+                [event["reward"] for event in events[3:]],
+                [-1.0, -1.25, -1.25],
+            )
+            self.assertEqual(
+                [
+                    event["reward_components"]
+                    for event in events[3:]
+                ],
+                [
+                    {
+                        "action_quality": 0.0,
+                        "best_action_bonus": 0.0,
+                        "illegal_action_penalty": -1.0,
+                        "policy_failure_penalty": 0.0,
+                    },
+                    {
+                        "action_quality": 0.0,
+                        "best_action_bonus": 0.0,
+                        "illegal_action_penalty": 0.0,
+                        "policy_failure_penalty": -1.25,
+                    },
+                    {
+                        "action_quality": 0.0,
+                        "best_action_bonus": 0.0,
+                        "illegal_action_penalty": 0.0,
+                        "policy_failure_penalty": -1.25,
+                    },
+                ],
+            )
+
+    def test_teacher_guided_group_results_and_offline_metrics_are_reviewable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+
+            completed = self.run_runner(
+                "--config",
+                str(TEACHER_GUIDED_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads((output_directory / "result.json").read_text())
+            self.assertEqual(
+                result["teacher_guided_rollout_group"],
+                {
+                    "group_size": 6,
+                    "reward_component_means": {
+                        "action_quality": 0.3546612630307316,
+                        "best_action_bonus": 0.016666666666666666,
+                        "illegal_action_penalty": -0.16666666666666666,
+                        "policy_failure_penalty": -0.4166666666666667,
+                    },
+                    "teacher_action_agreement_rate": 0.16666666666666666,
+                    "teacher_margin_scale": 2.0,
+                    "valid_legal_mean_regret": 1.0666666666666664,
+                },
+            )
+
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(len(events), 6)
+            self.assertTrue(
+                all(event["board"] == events[0]["board"] for event in events)
+            )
+
+            manifest = json.loads((output_directory / "manifest.json").read_text())
+            resolved_group = manifest["configuration"]["fixture"][
+                "teacher_guided_rollout_group"
+            ]
+            self.assertEqual(resolved_group["group_size"], 6)
+            self.assertEqual(resolved_group["board"], events[0]["board"])
+            self.assertEqual(
+                resolved_group["corpus_manifest"]["calibration"],
+                {
+                    "method": "median_positive_margin",
+                    "scope": "train",
+                    "tau": 2.0,
+                },
+            )
+            wandb_artifact = next(
+                artifact
+                for artifact in manifest["artifacts"]
+                if artifact["name"] == "wandb"
+            )
+            self.assertTrue(wandb_artifact["members"])
+            self.assertTrue(
+                all(
+                    member["path"].endswith(".wandb")
+                    for member in wandb_artifact["members"]
+                )
+            )
+
+            from tensorboard.backend.event_processing.event_accumulator import (
+                EventAccumulator,
+            )
+
+            tensorboard_artifact = next(
+                artifact
+                for artifact in manifest["artifacts"]
+                if artifact["name"] == "tensorboard"
+            )
+            tensorboard_events = EventAccumulator(
+                str(output_directory / tensorboard_artifact["path"])
+            )
+            tensorboard_events.Reload()
+            expected_tags = {
+                "teacher_guided/action_quality",
+                "teacher_guided/best_action_bonus",
+                "teacher_guided/illegal_action_penalty",
+                "teacher_guided/policy_failure_penalty",
+                "teacher_guided/regret",
+                "teacher_guided/group/action_quality_mean",
+                "teacher_guided/group/best_action_bonus_mean",
+                "teacher_guided/group/illegal_action_penalty_mean",
+                "teacher_guided/group/mean_reward",
+                "teacher_guided/group/policy_failure_penalty_mean",
+                "teacher_guided/group/teacher_action_agreement_rate",
+                "teacher_guided/group/valid_legal_mean_regret",
+            }
+            self.assertTrue(
+                expected_tags.issubset(
+                    set(tensorboard_events.Tags()["scalars"])
+                )
+            )
+            component_events = tensorboard_events.Scalars(
+                "teacher_guided/illegal_action_penalty"
+            )
+            self.assertEqual(
+                [(event.step, event.value) for event in component_events],
+                [
+                    (1, 0.0),
+                    (2, 0.0),
+                    (3, 0.0),
+                    (4, -1.0),
+                    (5, 0.0),
+                    (6, 0.0),
+                ],
+            )
+            group_mean = tensorboard_events.Scalars(
+                "teacher_guided/group/mean_reward"
+            )
+            self.assertEqual(len(group_mean), 1)
+            self.assertEqual(group_mean[0].step, 6)
+            self.assertAlmostEqual(group_mean[0].value, -0.2120054)
+
+    def test_teacher_guided_group_rejects_per_candidate_boards_and_wrong_size(
+        self,
+    ) -> None:
+        invalid_cases = {
+            "candidate board": (
+                lambda configuration: configuration["fixture"][
+                    "teacher_guided_rollout_group"
+                ]["candidates"][0].update(
+                    {
+                        "board": [
+                            [2, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                            [0, 0, 0, 0],
+                        ]
+                    }
+                ),
+                "candidates[0] must contain exactly",
+            ),
+            "wrong group size": (
+                lambda configuration: configuration["fixture"][
+                    "teacher_guided_rollout_group"
+                ].update({"group_size": 5}),
+                "group_size must equal total_steps",
+            ),
+        }
+        for label, (mutate, expected_error) in invalid_cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                config_path = root / "invalid.json"
+                output_directory = root / "run"
+                configuration = json.loads(TEACHER_GUIDED_FIXTURE.read_text())
+                configuration["fixture"]["teacher_guided_rollout_group"][
+                    "corpus_manifest"
+                ] = str(TEACHER_REWARD_MANIFEST)
+                mutate(configuration)
+                config_path.write_text(json.dumps(configuration))
+
+                completed = self.run_runner(
+                    "--config",
+                    str(config_path),
+                    "--output-dir",
+                    str(output_directory),
+                )
+
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(expected_error, completed.stderr)
+                self.assertFalse(output_directory.exists())
 
     def test_reasoning_generation_budget_is_fixed_at_96_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

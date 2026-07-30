@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "experiment_name": "issue-6-teacher-guided-rollout-group",
+  "seed": 2048,
+  "total_steps": 6,
+  "fixture": {
+    "teacher_guided_rollout_group": {
+      "group_size": 6,
+      "corpus_manifest": "teacher_corpus_reward_manifest.json",
+      "board": [
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [2, 4, 0, 8]
+      ],
+      "teacher_judgment": {
+        "action_scores": {
+          "up": 10.0,
+          "down": null,
+          "left": 9.8,
+          "right": 7.0
+        },
+        "teacher_action": "up"
+      },
+      "candidates": [
+        {
+          "variant": "direct_action",
+          "response": "<action>UP</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "variant": "direct_action",
+          "response": "<action>LEFT</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "variant": "direct_action",
+          "response": "<action>RIGHT</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "variant": "direct_action",
+          "response": "<action>DOWN</action>",
+          "response_length_tokens": 3,
+          "truncated": false
+        },
+        {
+          "variant": "direct_action",
+          "response": "<action>LEFT</action> extra",
+          "response_length_tokens": 4,
+          "truncated": false
+        },
+        {
+          "variant": "direct_action",
+          "response": "<action>UP",
+          "response_length_tokens": 2,
+          "truncated": true
+        }
+      ]
+    }
+  },
+  "telemetry": {
+    "wandb_project": "2048llm-fixture"
+  }
+}
