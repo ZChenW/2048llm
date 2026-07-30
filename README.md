@@ -94,6 +94,116 @@ Run the CLI contract tests:
   python -m unittest discover -s tests -v
 ```
 
+## Qwen3.5-4B zero-shot gate and conditional masked SFT
+
+The pre-RL gate compares the Direct-action Policy with the native Qwen
+Reasoning Policy on the same deterministic 500-board slice of the production
+Teacher Policy Corpus test split. The slice preserves the corpus 50% Natural
+State / 30% Hard State / 20% Late State mix. Selection is a stable hash of the
+configured seed, purpose, and record ID; the data manifest records the selected
+member checksum.
+
+Point an isolated worktree at the retained corpus and validate all source
+hashes, counts, Corpus Strata, Trajectory Lineage, Symmetry Orbit isolation,
+and the 500/900/100 selections without loading the model:
+
+```bash
+export LLM2048_TEACHER_CORPUS_MANIFEST="$PWD/runs/teacher-corpus-depth2-production/manifest.json"
+
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --zero-shot-sft-config configs/qwen35_4b_zero_shot_sft_gate.json \
+  --output-dir runs/qwen35-4b-zero-shot-sft-gate \
+  --dry-run
+```
+
+The real run requires the same pinned BF16 Unsloth stack and private online
+W&B project as the GRPO feasibility smoke. The Reasoning Policy gate enables
+Qwen's native thinking mode; the Direct-action Policy disables it. A policy
+variant passes at 95% parse rate and at most 2% illegal actions. A passing
+variant keeps the unchanged base model and performs no SFT.
+
+For each failing variant, the runner derives exactly 900 train and 100
+validation examples from their corresponding corpus splits. The Teacher
+Policy supplies only the final action. The Reasoning Policy target contains a
+non-Teacher placeholder trace whose token labels are masked; `<think>` and
+`</think>` envelope tokens plus the final `<action>…</action>` remain
+supervised. Maintained Transformers `Trainer` and Unsloth language-only
+rank-64 LoRA are used; there is no custom training loop and no GRPO in this
+ticket.
+
+Load the credential without printing it, keep checkpoint upload disabled, and
+run:
+
+```bash
+export WANDB_MODE=online
+export WANDB_LOG_MODEL=false
+
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --zero-shot-sft-config configs/qwen35_4b_zero_shot_sft_gate.json \
+  --output-dir runs/qwen35-4b-zero-shot-sft-gate-phase-1
+```
+
+To avoid retaining Trainer CUDA state while reloading the final Reasoning
+adapter, the first command exits successfully with status
+`awaiting_fresh_process_finalization`. It emits `handoff.json` and an immutable
+`finalization-lock.json`; it does not create or depend on `failure.json`.
+Complete the mandatory final gate in a new process:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --zero-shot-sft-config configs/qwen35_4b_zero_shot_sft_gate.json \
+  --finalize-from runs/qwen35-4b-zero-shot-sft-gate-phase-1 \
+  --finalization-lock \
+    runs/qwen35-4b-zero-shot-sft-gate-phase-1/finalization-lock.json \
+  --output-dir runs/qwen35-4b-zero-shot-sft-gate-final
+```
+
+Together the two successful phases write per-board before/after gate events,
+data/config provenance, private W&B and local TensorBoard metrics,
+adapter-only checkpoints for failing variants, exact-base reload evidence,
+and the selected starting point for each Student Policy.
+
+The completed 500-board gate found that neither variant is ready for
+Teacher-guided GRPO. Direct-action zero-shot parsed 100% but produced 10.2%
+illegal actions; its masked-SFT adapter regressed to 16.4%, so the selected
+candidate remains the unchanged pinned base. Native Reasoning zero-shot
+truncated all responses at 96 tokens. Its adapter reload produced complete
+8-token envelopes without truncation, but all 500 contained an empty or
+non-English Policy Reasoning Trace and therefore parsed at 0%. It remains the
+best provisional Reasoning candidate, but does not pass the gate.
+
+Before the planned two-phase handoff was added, two historical combined
+train/evaluate attempts retained enough CUDA state to OOM during the final
+Reasoning adapter reload. The exceptional recovery command below preserves
+that lineage, verifies an immutable SHA-256 lock over the failed source
+configuration, data, fixed gate events, and both adapters, and cannot invoke
+training. It is evidence recovery, not the supported default workflow:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --zero-shot-sft-config configs/qwen35_4b_zero_shot_sft_gate.json \
+  --recovery-from runs/qwen35-4b-zero-shot-sft-gate-attempt-2 \
+  --recovery-lock runs/qwen35-4b-zero-shot-sft-gate-attempt-2.recovery-lock.json \
+  --output-dir runs/qwen35-4b-zero-shot-sft-gate-attempt-2-recovery
+```
+
+The private online recovery telemetry is available in W&B run
+[`esgsgfrl`](https://wandb.ai/zichenw66-umass-amherst/2048llm-feasibility/runs/esgsgfrl);
+adapter upload remained disabled and the same metrics were written to local
+TensorBoard events.
+
+The expensive 900/100 SFT sequence was not repeated solely to exercise the
+new handoff: attempt 2 already completed the identical deterministic training
+phase and the recovery run completed the identical fresh-process finalizer.
+The phase-selection regression test additionally executes the real
+orchestration seam with mocked model operations, proving that phase 1 returns
+the awaiting status, writes both handoff files, never reloads the Reasoning
+adapter, and rejects any planned-finalization dependency on `failure.json`.
+
 ## Qwen3.5-4B GRPO feasibility smoke
 
 Install the pinned RTX 50-series training stack in the `td2048` environment:

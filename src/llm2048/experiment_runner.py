@@ -1558,9 +1558,30 @@ def _parser() -> argparse.ArgumentParser:
     configuration.add_argument("--config", type=Path)
     configuration.add_argument("--teacher-corpus-config", type=Path)
     configuration.add_argument("--grpo-smoke-config", type=Path)
+    configuration.add_argument("--zero-shot-sft-config", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stop-after-step", type=int)
+    parser.add_argument(
+        "--recovery-from",
+        type=Path,
+        help="failed zero-shot/SFT run to recover without retraining",
+    )
+    parser.add_argument(
+        "--recovery-lock",
+        type=Path,
+        help="immutable artifact lock for --recovery-from",
+    )
+    parser.add_argument(
+        "--finalize-from",
+        type=Path,
+        help="successful phase-one run awaiting fresh-process evaluation",
+    )
+    parser.add_argument(
+        "--finalization-lock",
+        type=Path,
+        help="immutable artifact lock emitted by --finalize-from",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -1568,7 +1589,111 @@ def _parser() -> argparse.ArgumentParser:
 def main(arguments: Sequence[str] | None = None) -> int:
     parsed = _parser().parse_args(arguments)
     try:
-        if parsed.grpo_smoke_config is not None:
+        if parsed.zero_shot_sft_config is not None:
+            if parsed.resume is not None or parsed.stop_after_step is not None:
+                raise ConfigurationError(
+                    "--resume and --stop-after-step are not supported for "
+                    "zero-shot/SFT gate runs"
+                )
+            from llm2048.zero_shot_sft import (
+                GateConfigurationError,
+                ZeroShotSftConfig,
+                prepare_data_plan,
+                run_adapter_reload_recovery,
+                run_fresh_process_finalization,
+                run_zero_shot_sft_gate,
+            )
+
+            try:
+                gate_config, gate_config_sha256 = ZeroShotSftConfig.load(
+                    parsed.zero_shot_sft_config
+                )
+            except GateConfigurationError as error:
+                raise ConfigurationError(str(error)) from error
+            recovery_requested = (
+                parsed.recovery_from is not None
+                or parsed.recovery_lock is not None
+            )
+            finalization_requested = (
+                parsed.finalize_from is not None
+                or parsed.finalization_lock is not None
+            )
+            if (parsed.recovery_from is None) != (
+                parsed.recovery_lock is None
+            ):
+                raise ConfigurationError(
+                    "--recovery-from and --recovery-lock must be used together"
+                )
+            if recovery_requested and parsed.dry_run:
+                raise ConfigurationError(
+                    "--dry-run is not supported for adapter reload recovery"
+                )
+            if (parsed.finalize_from is None) != (
+                parsed.finalization_lock is None
+            ):
+                raise ConfigurationError(
+                    "--finalize-from and --finalization-lock must be used "
+                    "together"
+                )
+            if recovery_requested and finalization_requested:
+                raise ConfigurationError(
+                    "planned finalization and failure recovery are mutually "
+                    "exclusive"
+                )
+            if finalization_requested and parsed.dry_run:
+                raise ConfigurationError(
+                    "--dry-run is not supported for adapter finalization"
+                )
+            if parsed.finalize_from is not None:
+                assert parsed.finalization_lock is not None
+                result = run_fresh_process_finalization(
+                    config=gate_config,
+                    input_sha256=gate_config_sha256,
+                    source_run_directory=parsed.finalize_from,
+                    finalization_lock_path=parsed.finalization_lock,
+                    output_directory=parsed.output_dir,
+                )
+            elif parsed.recovery_from is not None:
+                assert parsed.recovery_lock is not None
+                result = run_adapter_reload_recovery(
+                    config=gate_config,
+                    input_sha256=gate_config_sha256,
+                    source_run_directory=parsed.recovery_from,
+                    recovery_lock_path=parsed.recovery_lock,
+                    output_directory=parsed.output_dir,
+                )
+            elif parsed.dry_run:
+                plan = prepare_data_plan(gate_config)
+                result = {
+                    "status": "validated",
+                    "configuration_sha256": gate_config_sha256,
+                    **gate_config.resolved(),
+                    "corpus_manifest_path": str(plan["manifest_path"]),
+                    "corpus_manifest_sha256": plan["manifest_sha256"],
+                    "selections": {
+                        "gate": plan["gate"].evidence(),
+                        "sft_train": plan["train"].evidence(),
+                        "sft_validation": plan["validation"].evidence(),
+                    },
+                    "split_isolation": plan["split_isolation"],
+                }
+            else:
+                result = run_zero_shot_sft_gate(
+                    config=gate_config,
+                    input_sha256=gate_config_sha256,
+                    output_directory=parsed.output_dir,
+                )
+        elif parsed.grpo_smoke_config is not None:
+            if (
+                parsed.recovery_from is not None
+                or parsed.recovery_lock is not None
+                or parsed.finalize_from is not None
+                or parsed.finalization_lock is not None
+            ):
+                raise ConfigurationError(
+                    "adapter reload recovery requires "
+                    "--zero-shot-sft-config"
+                )
             if parsed.resume is not None or parsed.stop_after_step is not None:
                 raise ConfigurationError(
                     "--resume and --stop-after-step are not supported for GRPO smoke runs"
@@ -1594,6 +1719,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
             else:
                 result = {"status": "validated", **smoke_config.resolved()}
         elif parsed.teacher_corpus_config is not None:
+            if (
+                parsed.recovery_from is not None
+                or parsed.recovery_lock is not None
+                or parsed.finalize_from is not None
+                or parsed.finalization_lock is not None
+            ):
+                raise ConfigurationError(
+                    "adapter reload recovery requires "
+                    "--zero-shot-sft-config"
+                )
             if parsed.dry_run:
                 raise ConfigurationError(
                     "--dry-run is supported only for GRPO smoke runs"
@@ -1607,6 +1742,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 output_directory=parsed.output_dir,
             )
         else:
+            if (
+                parsed.recovery_from is not None
+                or parsed.recovery_lock is not None
+                or parsed.finalize_from is not None
+                or parsed.finalization_lock is not None
+            ):
+                raise ConfigurationError(
+                    "adapter reload recovery requires "
+                    "--zero-shot-sft-config"
+                )
             if parsed.dry_run:
                 raise ConfigurationError(
                     "--dry-run is supported only for GRPO smoke runs"

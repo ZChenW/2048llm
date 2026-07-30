@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from hashlib import sha256
 from importlib.metadata import version
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,7 @@ import sys
 import tempfile
 from typing import Any
 import unittest
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +34,9 @@ TEACHER_REWARD_MANIFEST = (
 )
 GRPO_SMOKE_FIXTURE = (
     REPO_ROOT / "configs" / "qwen35_4b_grpo_smoke.json"
+)
+ZERO_SHOT_SFT_CONFIG = (
+    REPO_ROOT / "configs" / "qwen35_4b_zero_shot_sft_gate.json"
 )
 FIXTURE_BOARD = [
     [0, 0, 0, 0],
@@ -317,6 +323,50 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             )
             self.assertNotIn("api_key", completed.stdout.lower())
             self.assertFalse(output_directory.exists())
+
+    def test_planned_finalization_dispatches_without_a_failure_artifact(
+        self,
+    ) -> None:
+        from llm2048.experiment_runner import main
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "successful-phase-one"
+            source.mkdir()
+            lock = source / "finalization-lock.json"
+            lock.write_text("{}\n", encoding="utf-8")
+            output = root / "final"
+            expected = {
+                "status": "completed",
+                "fresh_training_performed": False,
+            }
+            stdout = StringIO()
+            with patch(
+                "llm2048.zero_shot_sft.run_fresh_process_finalization",
+                return_value=expected,
+            ) as finalize:
+                with redirect_stdout(stdout):
+                    return_code = main(
+                        [
+                            "--zero-shot-sft-config",
+                            str(ZERO_SHOT_SFT_CONFIG),
+                            "--finalize-from",
+                            str(source),
+                            "--finalization-lock",
+                            str(lock),
+                            "--output-dir",
+                            str(output),
+                        ]
+                    )
+
+            self.assertEqual(return_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue()), expected)
+            self.assertFalse((source / "failure.json").exists())
+            finalize.assert_called_once()
+            call = finalize.call_args.kwargs
+            self.assertEqual(call["source_run_directory"], source)
+            self.assertEqual(call["finalization_lock_path"], lock)
+            self.assertEqual(call["output_directory"], output)
 
     def test_resume_continues_without_repeating_completed_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

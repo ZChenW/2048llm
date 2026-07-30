@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "experiment_name": "issue-8-qwen35-4b-zero-shot-sft-gate",
+  "seed": 2048,
+  "model": {
+    "id": "Qwen/Qwen3.5-4B",
+    "revision": "c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97",
+    "precision": "bf16",
+    "load_in_4bit": false,
+    "fast_inference": false,
+    "text_only": true,
+    "max_sequence_length": 256
+  },
+  "corpus": {
+    "manifest_path": "runs/teacher-corpus-depth2-production/manifest.json",
+    "manifest_environment_override": "LLM2048_TEACHER_CORPUS_MANIFEST"
+  },
+  "gate": {
+    "split": "test",
+    "count": 500,
+    "strata": {
+      "natural": 250,
+      "hard": 150,
+      "late": 100
+    },
+    "parse_rate_minimum": 0.95,
+    "illegal_action_rate_maximum": 0.02,
+    "evaluation_batch_size": 8,
+    "adapter_evaluation_batch_size": 4,
+    "recovery_evaluation_batch_size": 2,
+    "direct_action_max_new_tokens": 24,
+    "reasoning_max_new_tokens": 96
+  },
+  "sft": {
+    "trainer": "transformers.Trainer",
+    "total_examples": 1000,
+    "train": {
+      "split": "train",
+      "count": 900,
+      "strata": {
+        "natural": 450,
+        "hard": 270,
+        "late": 180
+      }
+    },
+    "validation": {
+      "split": "validation",
+      "count": 100,
+      "strata": {
+        "natural": 50,
+        "hard": 30,
+        "late": 20
+      }
+    },
+    "policy_reasoning_trace_placeholder": "Consider the board and choose one legal move.",
+    "mask_policy_reasoning_trace_body": true,
+    "lora": {
+      "rank": 64,
+      "alpha": 64,
+      "dropout": 0.0,
+      "finetune_vision_layers": false,
+      "finetune_language_layers": true,
+      "finetune_attention_modules": true,
+      "finetune_mlp_modules": true,
+      "gradient_checkpointing": "unsloth"
+    },
+    "training": {
+      "num_train_epochs": 1.0,
+      "learning_rate": 0.0002,
+      "per_device_train_batch_size": 1,
+      "per_device_eval_batch_size": 2,
+      "gradient_accumulation_steps": 4,
+      "warmup_ratio": 0.03,
+      "weight_decay": 0.0,
+      "optimizer": "adamw_8bit",
+      "logging_steps": 10
+    }
+  },
+  "telemetry": {
+    "wandb_mode": "online",
+    "wandb_entity": "auto",
+    "wandb_project": "2048llm-feasibility",
+    "wandb_project_visibility": "private",
+    "tensorboard": true,
+    "upload_model_checkpoints": false
+  }
+}
