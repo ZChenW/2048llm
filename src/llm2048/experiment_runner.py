@@ -15,9 +15,137 @@ import sys
 import time
 from typing import Any, Sequence
 
+from llm2048.policy_contracts import (
+    ACTIONS,
+    ACTION_ENVELOPE,
+    REASONING_ENVELOPE,
+    REASONING_MAX_GENERATION_TOKENS,
+    PolicyVariant,
+    build_policy_prompt,
+    enforce_policy_response,
+)
+
 
 class ConfigurationError(ValueError):
     """Raised when an experiment configuration violates the public contract."""
+
+
+@dataclass(frozen=True)
+class PolicyFixtureCase:
+    variant: PolicyVariant
+    board: list[list[int]]
+    response: str
+    response_length_tokens: int
+    truncated: bool
+    legal_actions: list[str]
+
+    def resolved(self) -> dict[str, Any]:
+        return {
+            "variant": self.variant,
+            "board": self.board,
+            "response": self.response,
+            "response_length_tokens": self.response_length_tokens,
+            "truncated": self.truncated,
+            "legal_actions": self.legal_actions,
+        }
+
+
+def _validate_board(board: Any, field: str) -> list[list[int]]:
+    if (
+        not isinstance(board, list)
+        or len(board) != 4
+        or any(not isinstance(row, list) or len(row) != 4 for row in board)
+        or any(
+            not isinstance(tile, int) or isinstance(tile, bool) or tile < 0
+            for row in board
+            for tile in row
+        )
+    ):
+        raise ConfigurationError(
+            f"{field} must be a 4x4 matrix of non-negative integers"
+        )
+    return board
+
+
+def _validate_policy_board(board: Any, field: str) -> list[list[int]]:
+    validated = _validate_board(board, field)
+    if any(
+        tile != 0 and (tile < 2 or tile & (tile - 1) != 0)
+        for row in validated
+        for tile in row
+    ):
+        raise ConfigurationError(f"{field} tiles must be 0 or powers of two")
+    return validated
+
+
+def _load_policy_cases(
+    raw_cases: Any,
+    total_steps: int,
+) -> list[PolicyFixtureCase]:
+    if not isinstance(raw_cases, list) or len(raw_cases) != total_steps:
+        raise ConfigurationError(
+            "fixture.policy_cases must contain one object per step"
+        )
+
+    cases: list[PolicyFixtureCase] = []
+    for index, raw_case in enumerate(raw_cases):
+        field = f"fixture.policy_cases[{index}]"
+        if not isinstance(raw_case, dict):
+            raise ConfigurationError(f"{field} must be an object")
+
+        variant = raw_case.get("variant")
+        if variant not in ("direct_action", "reasoning"):
+            raise ConfigurationError(
+                f"{field}.variant must be 'direct_action' or 'reasoning'"
+            )
+        board = _validate_policy_board(raw_case.get("board"), f"{field}.board")
+        response = raw_case.get("response")
+        if not isinstance(response, str):
+            raise ConfigurationError(f"{field}.response must be a string")
+        response_length_tokens = raw_case.get("response_length_tokens")
+        if (
+            not isinstance(response_length_tokens, int)
+            or isinstance(response_length_tokens, bool)
+            or response_length_tokens < 0
+        ):
+            raise ConfigurationError(
+                f"{field}.response_length_tokens must be a non-negative integer"
+            )
+        if (
+            variant == "reasoning"
+            and response_length_tokens > REASONING_MAX_GENERATION_TOKENS
+        ):
+            raise ConfigurationError(
+                f"{field}.response_length_tokens must not exceed "
+                f"{REASONING_MAX_GENERATION_TOKENS} for a Reasoning Policy"
+            )
+        truncated = raw_case.get("truncated")
+        if not isinstance(truncated, bool):
+            raise ConfigurationError(f"{field}.truncated must be a boolean")
+        legal_actions = raw_case.get("legal_actions")
+        if (
+            not isinstance(legal_actions, list)
+            or any(
+                not isinstance(action, str) or action not in ACTIONS
+                for action in legal_actions
+            )
+            or len(set(legal_actions)) != len(legal_actions)
+        ):
+            raise ConfigurationError(
+                f"{field}.legal_actions must contain unique supported actions"
+            )
+
+        cases.append(
+            PolicyFixtureCase(
+                variant=variant,
+                board=board,
+                response=response,
+                response_length_tokens=response_length_tokens,
+                truncated=truncated,
+                legal_actions=legal_actions,
+            )
+        )
+    return cases
 
 
 @dataclass(frozen=True)
@@ -26,8 +154,9 @@ class ExperimentConfig:
     experiment_name: str
     seed: int
     total_steps: int
-    board: list[list[int]]
-    policy_actions: list[str]
+    board: list[list[int]] | None
+    policy_actions: list[str] | None
+    policy_cases: list[PolicyFixtureCase] | None
     rewards: list[float]
     wandb_project: str
 
@@ -75,46 +204,42 @@ class ExperimentConfig:
         fixture = raw["fixture"]
         if not isinstance(fixture, dict):
             raise ConfigurationError("fixture must be an object")
-        board = fixture.get("board")
-        if (
-            not isinstance(board, list)
-            or len(board) != 4
-            or any(not isinstance(row, list) or len(row) != 4 for row in board)
-            or any(
-                not isinstance(tile, int) or isinstance(tile, bool) or tile < 0
-                for row in board
-                for tile in row
-            )
-        ):
-            raise ConfigurationError(
-                "fixture.board must be a 4x4 matrix of non-negative integers"
-            )
 
-        policy_actions = fixture.get("policy_actions")
-        rewards = fixture.get("rewards")
         total_steps = raw["total_steps"]
-        if (
-            not isinstance(policy_actions, list)
-            or len(policy_actions) != total_steps
-            or any(not isinstance(action, str) for action in policy_actions)
-        ):
-            raise ConfigurationError(
-                "fixture.policy_actions must contain one string per step"
+        policy_cases_raw = fixture.get("policy_cases")
+        if policy_cases_raw is not None:
+            policy_cases = _load_policy_cases(policy_cases_raw, total_steps)
+            board = None
+            policy_actions = None
+        else:
+            policy_cases = None
+            board = _validate_board(fixture.get("board"), "fixture.board")
+            policy_actions = fixture.get("policy_actions")
+            if (
+                not isinstance(policy_actions, list)
+                or len(policy_actions) != total_steps
+                or any(not isinstance(action, str) for action in policy_actions)
+            ):
+                raise ConfigurationError(
+                    "fixture.policy_actions must contain one string per step"
+                )
+            unsupported_action = next(
+                (
+                    action
+                    for action in policy_actions
+                    if action not in ACTIONS
+                ),
+                None,
             )
-        supported_actions = {"LEFT", "RIGHT", "UP", "DOWN"}
-        unsupported_action = next(
-            (
-                action
-                for action in policy_actions
-                if action not in supported_actions
-            ),
-            None,
-        )
-        if unsupported_action is not None:
-            raise ConfigurationError(
-                "fixture.policy_actions contains unsupported action "
-                f"{unsupported_action!r}"
-            )
+            if unsupported_action is not None:
+                raise ConfigurationError(
+                    "fixture.policy_actions contains unsupported action "
+                    f"{unsupported_action!r}"
+                )
+
+        rewards = fixture.get("rewards")
+        if rewards is None and policy_cases is not None:
+            rewards = [0.0] * total_steps
         if (
             not isinstance(rewards, list)
             or len(rewards) != total_steps
@@ -142,6 +267,7 @@ class ExperimentConfig:
                 total_steps=total_steps,
                 board=board,
                 policy_actions=policy_actions,
+                policy_cases=policy_cases,
                 rewards=[float(reward) for reward in rewards],
                 wandb_project=wandb_project,
             ),
@@ -149,22 +275,42 @@ class ExperimentConfig:
         )
 
     def resolved(self) -> dict[str, Any]:
+        if self.policy_cases is None:
+            fixture: dict[str, Any] = {
+                "board": self.board,
+                "policy_actions": self.policy_actions,
+                "rewards": self.rewards,
+            }
+        else:
+            fixture = {
+                "policy_cases": [case.resolved() for case in self.policy_cases],
+                "rewards": self.rewards,
+            }
         return {
             "schema_version": self.schema_version,
             "experiment_name": self.experiment_name,
             "seed": self.seed,
             "total_steps": self.total_steps,
-            "fixture": {
-                "board": self.board,
-                "policy_actions": self.policy_actions,
-                "rewards": self.rewards,
-            },
+            "fixture": fixture,
             "telemetry": {
                 "wandb_mode": "offline",
                 "wandb_project": self.wandb_project,
                 "tensorboard": True,
             },
             "checkpoint_every": 1,
+            **(
+                {
+                    "policy_contracts": {
+                        "action_envelope": ACTION_ENVELOPE,
+                        "reasoning_envelope": REASONING_ENVELOPE,
+                        "reasoning_max_generation_tokens": (
+                            REASONING_MAX_GENERATION_TOKENS
+                        ),
+                    }
+                }
+                if self.policy_cases is not None
+                else {}
+            ),
         }
 
     def experiment_id(self) -> str:
@@ -306,6 +452,35 @@ class Telemetry:
     def log_evaluation(self, step: int, mean_reward: float) -> None:
         self._log(step, {"eval/mean_reward": mean_reward})
 
+    def log_policy_training(
+        self,
+        step: int,
+        variant: PolicyVariant,
+        *,
+        reward: float,
+        reward_total: float,
+        parsed: bool,
+        truncated: bool,
+        illegal_action: bool,
+        valid_action: bool,
+        policy_failure: bool,
+        response_length_tokens: int,
+    ) -> None:
+        prefix = f"policy/{variant}"
+        self._log(
+            step,
+            {
+                "train/reward": reward,
+                "train/reward_total": reward_total,
+                f"{prefix}/parsed": float(parsed),
+                f"{prefix}/truncated": float(truncated),
+                f"{prefix}/illegal_action": float(illegal_action),
+                f"{prefix}/valid_action": float(valid_action),
+                f"{prefix}/policy_failure": float(policy_failure),
+                f"{prefix}/response_length_tokens": float(response_length_tokens),
+            },
+        )
+
     def close(self) -> tuple[Path, Path]:
         self._event_writer.close()
         self._wandb_run.finish()
@@ -323,6 +498,86 @@ def _load_checkpoint(path: Path, experiment_id: str) -> dict[str, Any]:
     if checkpoint.get("experiment_id") != experiment_id:
         raise ConfigurationError("checkpoint does not belong to this experiment")
     return checkpoint
+
+
+def _policy_event(
+    case: PolicyFixtureCase,
+    *,
+    reward: float,
+    reward_total: float,
+    step: int,
+) -> dict[str, Any]:
+    contract = enforce_policy_response(
+        variant=case.variant,
+        response=case.response,
+        truncated=case.truncated,
+        legal_actions=case.legal_actions,
+    )
+    return {
+        "action": contract.action,
+        "board": case.board,
+        "legal_actions": case.legal_actions,
+        "max_generation_tokens": (
+            REASONING_MAX_GENERATION_TOKENS
+            if case.variant == "reasoning"
+            else None
+        ),
+        "parsed": contract.parsed,
+        "policy_failure": contract.policy_failure,
+        "policy_failure_reason": contract.policy_failure_reason,
+        "policy_reasoning_trace": contract.policy_reasoning_trace,
+        "prompt": build_policy_prompt(case.variant, case.board),
+        "response": case.response,
+        "response_length_tokens": case.response_length_tokens,
+        "reward": reward,
+        "reward_total": reward_total,
+        "step": step,
+        "truncated": case.truncated,
+        "valid_action": contract.valid_action,
+        "variant": case.variant,
+    }
+
+
+def _policy_metrics(events_path: Path) -> dict[str, dict[str, float | int]]:
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    metrics: dict[str, dict[str, float | int]] = {}
+    for variant in ("direct_action", "reasoning"):
+        variant_events = [event for event in events if event["variant"] == variant]
+        responses = len(variant_events)
+        if responses == 0:
+            continue
+        metrics[variant] = {
+            "responses": responses,
+            "parse_rate": (
+                sum(bool(event["parsed"]) for event in variant_events) / responses
+            ),
+            "truncation_rate": (
+                sum(bool(event["truncated"]) for event in variant_events) / responses
+            ),
+            "illegal_action_rate": (
+                sum(
+                    event["policy_failure_reason"] == "illegal_action"
+                    for event in variant_events
+                )
+                / responses
+            ),
+            "valid_action_rate": (
+                sum(bool(event["valid_action"]) for event in variant_events)
+                / responses
+            ),
+            "policy_failure_rate": (
+                sum(bool(event["policy_failure"]) for event in variant_events)
+                / responses
+            ),
+            "mean_response_length_tokens": (
+                sum(event["response_length_tokens"] for event in variant_events)
+                / responses
+            ),
+        }
+    return metrics
 
 
 def run_experiment(
@@ -375,20 +630,44 @@ def run_experiment(
     try:
         for zero_based_step in range(completed_steps, target_step):
             step = zero_based_step + 1
-            action = config.policy_actions[zero_based_step]
             reward = config.rewards[zero_based_step]
             reward_total += reward
-            _append_json_line(
-                events_path,
-                {
-                    "action": action,
+            if config.policy_cases is None:
+                if config.policy_actions is None or config.board is None:
+                    raise RuntimeError("legacy fixture is missing policy inputs")
+                event = {
+                    "action": config.policy_actions[zero_based_step],
                     "board": config.board,
                     "reward": reward,
                     "reward_total": reward_total,
                     "step": step,
-                },
-            )
-            telemetry.log_training(step, reward, reward_total)
+                }
+            else:
+                case = config.policy_cases[zero_based_step]
+                event = _policy_event(
+                    case,
+                    reward=reward,
+                    reward_total=reward_total,
+                    step=step,
+                )
+            _append_json_line(events_path, event)
+            if config.policy_cases is None:
+                telemetry.log_training(step, reward, reward_total)
+            else:
+                telemetry.log_policy_training(
+                    step,
+                    case.variant,
+                    reward=reward,
+                    reward_total=reward_total,
+                    parsed=bool(event["parsed"]),
+                    truncated=bool(event["truncated"]),
+                    illegal_action=(
+                        event["policy_failure_reason"] == "illegal_action"
+                    ),
+                    valid_action=bool(event["valid_action"]),
+                    policy_failure=bool(event["policy_failure"]),
+                    response_length_tokens=case.response_length_tokens,
+                )
             completed_steps = step
             _write_json(
                 checkpoint_path,
@@ -413,6 +692,8 @@ def run_experiment(
         },
         "status": status,
     }
+    if config.policy_cases is not None:
+        result["policy_metrics"] = _policy_metrics(events_path)
     _write_json(result_path, result)
     _append_json_line(
         invocations_path,

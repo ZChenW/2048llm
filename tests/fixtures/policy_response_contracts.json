@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "experiment_name": "issue-4-policy-response-contracts",
+  "seed": 2048,
+  "total_steps": 14,
+  "fixture": {
+    "policy_cases": [
+      {
+        "variant": "direct_action",
+        "board": [[2, 0, 0, 0], [0, 4, 0, 0], [0, 0, 8, 0], [0, 0, 0, 16]],
+        "response": "<action>LEFT</action>",
+        "response_length_tokens": 3,
+        "truncated": false,
+        "legal_actions": ["LEFT", "UP"]
+      },
+      {
+        "variant": "direct_action",
+        "board": [[4, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<action>LEFT</action> because it merges tiles",
+        "response_length_tokens": 6,
+        "truncated": false,
+        "legal_actions": ["LEFT"]
+      },
+      {
+        "variant": "direct_action",
+        "board": [[8, 0, 0, 0], [8, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<action>UP",
+        "response_length_tokens": 2,
+        "truncated": true,
+        "legal_actions": ["UP"]
+      },
+      {
+        "variant": "direct_action",
+        "board": [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "LEFT",
+        "response_length_tokens": 1,
+        "truncated": false,
+        "legal_actions": ["LEFT"]
+      },
+      {
+        "variant": "direct_action",
+        "board": [[2, 0, 2, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<action>LEFT</action><action>RIGHT</action>",
+        "response_length_tokens": 6,
+        "truncated": false,
+        "legal_actions": ["LEFT", "RIGHT"]
+      },
+      {
+        "variant": "direct_action",
+        "board": [[2, 0, 0, 2], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<action>SPIN</action>",
+        "response_length_tokens": 3,
+        "truncated": false,
+        "legal_actions": ["LEFT", "RIGHT"]
+      },
+      {
+        "variant": "direct_action",
+        "board": [[2, 4, 8, 16], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<action>DOWN</action>",
+        "response_length_tokens": 3,
+        "truncated": false,
+        "legal_actions": ["LEFT"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[2, 4, 8, 16], [2, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<think>Keep the largest tile in a corner.</think><action>UP</action>",
+        "response_length_tokens": 12,
+        "truncated": false,
+        "legal_actions": ["UP", "RIGHT"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[4, 4, 0, 0], [2, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<action>LEFT</action><think>Merge the pair.</think>",
+        "response_length_tokens": 14,
+        "truncated": false,
+        "legal_actions": ["LEFT"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[8, 8, 0, 0], [4, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<think>The open row favors a merge",
+        "response_length_tokens": 96,
+        "truncated": true,
+        "legal_actions": ["LEFT"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[16, 8, 4, 2], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<think>Preserve the ordered row.</think>",
+        "response_length_tokens": 6,
+        "truncated": false,
+        "legal_actions": ["RIGHT"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[2, 0, 2, 0], [4, 0, 4, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<think>Merge one pair.</think><action>LEFT</action><action>UP</action>",
+        "response_length_tokens": 15,
+        "truncated": false,
+        "legal_actions": ["LEFT", "UP"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[2, 4, 0, 0], [8, 16, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<think>Keep the shape compact.</think><action>DIAGONAL</action>",
+        "response_length_tokens": 10,
+        "truncated": false,
+        "legal_actions": ["LEFT", "UP"]
+      },
+      {
+        "variant": "reasoning",
+        "board": [[2, 4, 8, 16], [32, 64, 128, 256], [0, 0, 0, 0], [0, 0, 0, 0]],
+        "response": "<think>Avoid breaking the top rows.</think><action>RIGHT</action>",
+        "response_length_tokens": 11,
+        "truncated": false,
+        "legal_actions": ["DOWN"]
+      }
+    ]
+  },
+  "telemetry": {
+    "wandb_project": "2048llm-fixture"
+  }
+}

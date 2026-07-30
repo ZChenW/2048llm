@@ -25,6 +25,25 @@ The run writes a resolved manifest, deterministic events and result, an
 atomic checkpoint, a W&B offline run, and local TensorBoard events. It does
 not load a model or require a GPU.
 
+Run the deterministic Policy Response contract fixture:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --config tests/fixtures/policy_response_contracts.json \
+  --output-dir runs/policy-response-contracts
+```
+
+Each `fixture.policy_cases` entry is one independent Markov Policy decision.
+It supplies the latest 4×4 board, captured response and token length,
+truncation status, and deterministic change-making actions. The prompt never
+receives the latter. Direct-action responses must be exactly
+`<action>ACTION</action>`; Reasoning responses must be exactly
+`<think>POLICY_REASONING_TRACE</think><action>ACTION</action>` and use a fixed
+96-token maximum generation budget. `result.json` reports parse, truncation,
+illegal-action, valid-action, Policy Failure, and mean response-length metrics
+for each variant.
+
 Run the CLI contract tests:
 
 ```bash

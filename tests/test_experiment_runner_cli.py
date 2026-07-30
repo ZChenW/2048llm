@@ -13,6 +13,9 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "experiment_runner_tracer.json"
+POLICY_CONTRACT_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "policy_response_contracts.json"
+)
 FIXTURE_BOARD = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
@@ -366,6 +369,231 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                 completed.stderr,
                 "experiment runner error: fixture.policy_actions contains "
                 "unsupported action 'JUMP'\n",
+            )
+            self.assertFalse(output_directory.exists())
+
+    def test_policy_response_contracts_are_enforced_through_the_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory) / "run"
+
+            completed = self.run_runner(
+                "--config",
+                str(POLICY_CONTRACT_FIXTURE),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads((output_directory / "result.json").read_text())
+            expected_rates = {
+                "illegal_action_rate": 1 / 7,
+                "parse_rate": 2 / 7,
+                "policy_failure_rate": 6 / 7,
+                "truncation_rate": 1 / 7,
+                "valid_action_rate": 1 / 7,
+            }
+            self.assertEqual(
+                result["policy_metrics"]["direct_action"],
+                {
+                    **expected_rates,
+                    "mean_response_length_tokens": 24 / 7,
+                    "responses": 7,
+                },
+            )
+            self.assertEqual(
+                result["policy_metrics"]["reasoning"],
+                {
+                    **expected_rates,
+                    "mean_response_length_tokens": 164 / 7,
+                    "responses": 7,
+                },
+            )
+
+            events = [
+                json.loads(line)
+                for line in (output_directory / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertEqual(len(events), 14)
+            direct_events = [
+                event for event in events if event["variant"] == "direct_action"
+            ]
+            reasoning_events = [
+                event for event in events if event["variant"] == "reasoning"
+            ]
+
+            for event in events:
+                compact_board = json.dumps(event["board"], separators=(",", ":"))
+                self.assertEqual(event["prompt"].count(compact_board), 1)
+                self.assertIn("4x4 JSON array; 0 means empty", event["prompt"])
+                for prohibited in ("legal", "hint", "history", "score", "teacher"):
+                    self.assertNotIn(prohibited, event["prompt"].lower())
+
+            self.assertEqual(direct_events[0]["action"], "LEFT")
+            self.assertTrue(direct_events[0]["parsed"])
+            self.assertTrue(direct_events[0]["valid_action"])
+            self.assertFalse(direct_events[0]["policy_failure"])
+            self.assertNotIn("<think>", direct_events[0]["prompt"])
+            self.assertEqual(
+                direct_events[0]["response"],
+                "<action>LEFT</action>",
+            )
+
+            self.assertIn(
+                "<think>POLICY_REASONING_TRACE</think><action>ACTION</action>",
+                reasoning_events[0]["prompt"],
+            )
+            self.assertEqual(reasoning_events[0]["max_generation_tokens"], 96)
+            self.assertEqual(
+                reasoning_events[0]["policy_reasoning_trace"],
+                "Keep the largest tile in a corner.",
+            )
+            self.assertEqual(reasoning_events[0]["action"], "UP")
+            self.assertTrue(reasoning_events[0]["valid_action"])
+
+            expected_failure_reasons = [
+                "malformed_response",
+                "truncated_response",
+                "missing_action",
+                "multiple_actions",
+                "out_of_vocabulary_action",
+                "illegal_action",
+            ]
+            self.assertEqual(
+                [event["policy_failure_reason"] for event in direct_events[1:]],
+                expected_failure_reasons,
+            )
+            self.assertEqual(
+                [event["policy_failure_reason"] for event in reasoning_events[1:]],
+                expected_failure_reasons,
+            )
+            self.assertTrue(
+                all(event["action"] is None for event in direct_events[1:-1])
+            )
+            self.assertTrue(
+                all(event["action"] is None for event in reasoning_events[1:-1])
+            )
+            self.assertEqual(direct_events[-1]["action"], "DOWN")
+            self.assertTrue(direct_events[-1]["parsed"])
+            self.assertFalse(direct_events[-1]["valid_action"])
+            self.assertEqual(reasoning_events[-1]["action"], "RIGHT")
+            self.assertTrue(reasoning_events[-1]["parsed"])
+
+            manifest = json.loads((output_directory / "manifest.json").read_text())
+            self.assertEqual(
+                manifest["configuration"]["policy_contracts"],
+                {
+                    "action_envelope": "<action>ACTION</action>",
+                    "reasoning_envelope": (
+                        "<think>POLICY_REASONING_TRACE</think>"
+                        "<action>ACTION</action>"
+                    ),
+                    "reasoning_max_generation_tokens": 96,
+                },
+            )
+
+            from tensorboard.backend.event_processing.event_accumulator import (
+                EventAccumulator,
+            )
+
+            tensorboard_artifact = next(
+                artifact
+                for artifact in manifest["artifacts"]
+                if artifact["name"] == "tensorboard"
+            )
+            tensorboard_events = EventAccumulator(
+                str(output_directory / tensorboard_artifact["path"])
+            )
+            tensorboard_events.Reload()
+            self.assertEqual(
+                [
+                    (event.step, event.value)
+                    for event in tensorboard_events.Scalars(
+                        "policy/direct_action/parsed"
+                    )
+                ],
+                [
+                    (1, 1.0),
+                    (2, 0.0),
+                    (3, 0.0),
+                    (4, 0.0),
+                    (5, 0.0),
+                    (6, 0.0),
+                    (7, 1.0),
+                ],
+            )
+            self.assertEqual(
+                [
+                    (event.step, event.value)
+                    for event in tensorboard_events.Scalars(
+                        "policy/reasoning/response_length_tokens"
+                    )
+                ],
+                [
+                    (8, 12.0),
+                    (9, 14.0),
+                    (10, 96.0),
+                    (11, 6.0),
+                    (12, 15.0),
+                    (13, 10.0),
+                    (14, 11.0),
+                ],
+            )
+
+    def test_reasoning_generation_budget_is_fixed_at_96_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            invalid_config = root / "invalid.json"
+            output_directory = root / "run"
+            configuration = json.loads(POLICY_CONTRACT_FIXTURE.read_text())
+            configuration["total_steps"] = 1
+            configuration["fixture"]["policy_cases"] = [
+                configuration["fixture"]["policy_cases"][7]
+            ]
+            configuration["fixture"]["policy_cases"][0][
+                "response_length_tokens"
+            ] = 97
+            invalid_config.write_text(json.dumps(configuration))
+
+            completed = self.run_runner(
+                "--config",
+                str(invalid_config),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn(
+                "response_length_tokens must not exceed 96 for a Reasoning Policy",
+                completed.stderr,
+            )
+            self.assertFalse(output_directory.exists())
+
+    def test_policy_prompt_rejects_non_tile_board_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            invalid_config = root / "invalid.json"
+            output_directory = root / "run"
+            configuration = json.loads(POLICY_CONTRACT_FIXTURE.read_text())
+            configuration["total_steps"] = 1
+            configuration["fixture"]["policy_cases"] = [
+                configuration["fixture"]["policy_cases"][0]
+            ]
+            configuration["fixture"]["policy_cases"][0]["board"][0][0] = 1
+            invalid_config.write_text(json.dumps(configuration))
+
+            completed = self.run_runner(
+                "--config",
+                str(invalid_config),
+                "--output-dir",
+                str(output_directory),
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn(
+                "board tiles must be 0 or powers of two",
+                completed.stderr,
             )
             self.assertFalse(output_directory.exists())
 
