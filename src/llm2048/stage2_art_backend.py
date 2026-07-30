@@ -9,8 +9,10 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 import threading
 import time
+from types import ModuleType
 from typing import Any
 
 from llm2048.policy_contracts import change_making_actions, enforce_policy_response
@@ -115,6 +117,36 @@ def _internal_model_config(config: BackendSpikeConfig) -> dict[str, Any]:
     }
 
 
+def _install_art_registry_compatibility(
+    config: BackendSpikeConfig,
+) -> bool:
+    """Bypass ART 0.5.18's undeclared Megatron import for Unsloth mode."""
+    module_name = "art.megatron.model_support"
+    if module_name in sys.modules:
+        return False
+    compatibility_module = ModuleType(module_name)
+
+    def default_target_modules_for_model(
+        base_model: str,
+        *,
+        allow_unvalidated_arch: bool,
+    ) -> list[str]:
+        if (
+            base_model != config.model.id
+            or not allow_unvalidated_arch
+        ):
+            raise BackendSpikePreflightError(
+                "ART compatibility boundary received an unregistered model"
+            )
+        return list(config.lora.target_modules)
+
+    compatibility_module.default_target_modules_for_model = (  # type: ignore[attr-defined]
+        default_target_modules_for_model
+    )
+    sys.modules[module_name] = compatibility_module
+    return True
+
+
 async def _rollout(
     *,
     art: Any,
@@ -215,6 +247,9 @@ async def _run(
     import wandb
 
     versions = validate_stack(config, "art_local")
+    registry_compatibility_installed = _install_art_registry_compatibility(
+        config
+    )
     os.environ["WANDB_MODE"] = "online"
     os.environ["WANDB_LOG_MODEL"] = "false"
     entity, project_access = verify_private_wandb_project(
@@ -436,6 +471,12 @@ async def _run(
         "config_sha256": config_sha256,
         "resolved_config": config.resolved(),
         "dependency_versions": versions,
+        "compatibility": {
+            "art_megatron_registry_import_shim": (
+                registry_compatibility_installed
+            ),
+            "frozen_lora_targets_only": True,
+        },
         "runtime": {
             "python": platform.python_version(),
             "platform": platform.platform(),

@@ -58,6 +58,18 @@ trainer loop.
   separately managed vLLM runtime. These pins require an isolated environment
   rather than mutation of the proven `td2048` environment.
   [PyPI release metadata](https://pypi.org/pypi/openpipe-art/0.5.18/json).
+- The 0.5.18 local-backend import path loads ART's Megatron model registry
+  even when the selected trainer is Unsloth, but the `backend` extra does not
+  declare Megatron. Its separately advertised `megatron` extra requests
+  `megatron-core==0.16.0rc0` and `megatron-bridge==0.4.0rc0`; neither is
+  available for this Python 3.11 stack, while the available older bridge
+  conflicts with ART's Transformers 5.2 pin. The spike installs a narrow
+  compatibility module before ART imports that registry: it returns the
+  already frozen LoRA target modules and changes no trainer, GRPO, optimizer,
+  or rollout behavior. This workaround is counted against ART's integration
+  complexity.
+  [ART 0.5.18 package metadata](https://pypi.org/pypi/openpipe-art/0.5.18/json),
+  [Megatron Core 0.16.0](https://pypi.org/project/megatron-core/0.16.0/).
 
 ## TRL `environment_factory`
 

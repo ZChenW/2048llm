@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -19,6 +20,7 @@ from llm2048.stage2_backend_spike import (
 )
 from llm2048.policy_contracts import change_making_actions
 import llm2048.stage2_trl_backend as trl_backend
+from llm2048.stage2_art_backend import _install_art_registry_compatibility
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -158,6 +160,34 @@ class TrlEnvironmentContractTests(unittest.TestCase):
 
 
 class ArtifactContractTests(unittest.TestCase):
+    def test_art_registry_compatibility_exposes_only_frozen_targets(
+        self,
+    ) -> None:
+        config, _ = BackendSpikeConfig.load(CONFIG_PATH)
+        module_name = "art.megatron.model_support"
+        previous = sys.modules.pop(module_name, None)
+        try:
+            self.assertTrue(_install_art_registry_compatibility(config))
+            compatibility = sys.modules[module_name]
+            target_resolver = compatibility.default_target_modules_for_model
+
+            self.assertEqual(
+                target_resolver(
+                    config.model.id,
+                    allow_unvalidated_arch=True,
+                ),
+                list(config.lora.target_modules),
+            )
+            with self.assertRaises(BackendSpikePreflightError):
+                target_resolver(
+                    "other/model",
+                    allow_unvalidated_arch=True,
+                )
+        finally:
+            sys.modules.pop(module_name, None)
+            if previous is not None:
+                sys.modules[module_name] = previous
+
     def test_dry_run_persists_shared_group_evidence_without_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "run"

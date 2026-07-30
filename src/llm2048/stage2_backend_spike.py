@@ -34,6 +34,7 @@ BackendName = Literal["art_local", "trl_environment_factory"]
 PRIVATE_WANDB_ACCESS = frozenset({"PRIVATE", "RESTRICTED", "TEAM"})
 BACKEND_FAILURE_MODES: dict[BackendName, tuple[str, ...]] = {
     "art_local": (
+        "ART backend imports Megatron registration but omits megatron-core",
         "a zero-variance Rollout Group is skipped and cannot prove backward",
         "the shared-GPU LocalBackend must pause inference while Unsloth trains",
         "vLLM token-id metadata is required for each generated history",
