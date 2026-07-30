@@ -278,6 +278,9 @@ optimizer/scheduler states, RNG state, Dynamic Board Pool identity, resolved
 configuration, and resume manifest. The pool is not refreshed and confirmation
 seeds are not consumed during this block.
 
+The completed paired experiment and its no-promotion decision are recorded in
+[the issue-9 result report](docs/research/teacher-guided-grpo-block-1.md).
+
 ## Qwen3.5-4B GRPO feasibility smoke
 
 Install the pinned RTX 50-series training stack in the `td2048` environment:
