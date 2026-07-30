@@ -1,5 +1,6 @@
 # *.zip
 runs/
+wandb/
 artifacts/
 data/sft/*.jsonl
 *.bin

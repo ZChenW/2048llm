@@ -239,6 +239,10 @@ async def _run(
     config_sha256: str,
 ) -> dict[str, Any]:
     import art  # type: ignore[import-not-found]
+
+    registry_compatibility_installed = _install_art_registry_compatibility(
+        config
+    )
     from art.dev import InternalModelConfig  # type: ignore[import-not-found]
     from art.local import LocalBackend  # type: ignore[import-not-found]
     from art.trajectories import History  # type: ignore[import-not-found]
@@ -247,9 +251,6 @@ async def _run(
     import wandb
 
     versions = validate_stack(config, "art_local")
-    registry_compatibility_installed = _install_art_registry_compatibility(
-        config
-    )
     os.environ["WANDB_MODE"] = "online"
     os.environ["WANDB_LOG_MODEL"] = "false"
     entity, project_access = verify_private_wandb_project(

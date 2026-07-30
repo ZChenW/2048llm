@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 from pathlib import Path
@@ -168,7 +169,7 @@ class ArtifactContractTests(unittest.TestCase):
         previous = sys.modules.pop(module_name, None)
         try:
             self.assertTrue(_install_art_registry_compatibility(config))
-            compatibility = sys.modules[module_name]
+            compatibility = importlib.import_module(module_name)
             target_resolver = compatibility.default_target_modules_for_model
 
             self.assertEqual(
