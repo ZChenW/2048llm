@@ -25,6 +25,7 @@ import llm2048.stage2_trl_backend as trl_backend
 from llm2048.stage2_art_backend import (
     _install_art_registry_compatibility,
     _logprob_calculation_chunk_size,
+    _policy_sampling_seed,
     _training_completion_token_count,
 )
 
@@ -166,6 +167,24 @@ class TrlEnvironmentContractTests(unittest.TestCase):
 
 
 class ArtifactContractTests(unittest.TestCase):
+    def test_art_policy_sampling_is_distinct_from_environment_rng(self) -> None:
+        config, _ = BackendSpikeConfig.load(CONFIG_PATH)
+        group = rollout_group_manifest(config)
+
+        policy_sampling_seeds = [
+            _policy_sampling_seed(config, index)
+            for index in range(config.rollout.group_size)
+        ]
+
+        self.assertEqual(policy_sampling_seeds, [12012, 12013, 12014, 12015])
+        self.assertEqual(group["member_rng_seed"], [12012] * 4)
+        self.assertEqual(len(set(policy_sampling_seeds)), 4)
+        with self.assertRaisesRegex(
+            BackendSpikePreflightError,
+            "outside the registered group",
+        ):
+            _policy_sampling_seed(config, config.rollout.group_size)
+
     def test_art_logprob_chunk_size_tiles_registered_sequence(self) -> None:
         config, _ = BackendSpikeConfig.load(CONFIG_PATH)
 

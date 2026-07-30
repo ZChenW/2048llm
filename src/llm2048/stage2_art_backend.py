@@ -178,6 +178,18 @@ def _logprob_calculation_chunk_size(
     return chunk_size
 
 
+def _policy_sampling_seed(
+    config: BackendSpikeConfig,
+    member_index: int,
+) -> int:
+    """Give each Student sample independent, reproducible policy randomness."""
+    if not 0 <= member_index < config.rollout.group_size:
+        raise BackendSpikePreflightError(
+            "ART Rollout Group member index is outside the registered group"
+        )
+    return config.seed + member_index
+
+
 async def _rollout(
     *,
     art: Any,
@@ -191,6 +203,7 @@ async def _rollout(
     completion_tokens = 0
     rollout_started = time.monotonic()
     client = model.openai_client()
+    policy_sampling_seed = _policy_sampling_seed(config, member_index)
     for _ in range(config.rollout.horizon):
         prompt = episode.policy_prompt()
         completion = await client.chat.completions.create(
@@ -199,6 +212,7 @@ async def _rollout(
             max_completion_tokens=config.rollout.max_completion_tokens,
             temperature=config.rollout.temperature,
             top_p=config.rollout.top_p,
+            seed=policy_sampling_seed,
             logprobs=True,
             extra_body={
                 "top_k": config.rollout.top_k,
@@ -242,6 +256,7 @@ async def _rollout(
         metadata={
             "member_index": member_index,
             "rng_seed": episode.rng_seed,
+            "policy_sampling_seed": policy_sampling_seed,
             "start_snapshot_sha256": episode.start_snapshot_sha256,
             "terminal_reason": episode.terminal_reason,
         },
@@ -350,9 +365,21 @@ async def _run(
                 trajectory.metadata["start_snapshot_sha256"]
                 for trajectory in groups[0].trajectories
             }
-            if len(trajectory_seeds) != 1 or len(trajectory_snapshots) != 1:
+            policy_sampling_seeds = {
+                trajectory.metadata["policy_sampling_seed"]
+                for trajectory in groups[0].trajectories
+            }
+            if (
+                len(trajectory_seeds) != 1
+                or len(trajectory_snapshots) != 1
+                or policy_sampling_seeds
+                != {
+                    _policy_sampling_seed(config, index)
+                    for index in range(config.rollout.group_size)
+                }
+            ):
                 raise BackendSpikePreflightError(
-                    "ART Rollout Group members diverged in start randomness"
+                    "ART Rollout Group randomness schedule diverged"
                 )
             training_started = time.monotonic()
             train_result = await backend.train(
@@ -516,6 +543,7 @@ async def _run(
         "rollout_group": {
             **group_evidence,
             "environment_steps": environment_steps,
+            "policy_sampling_seeds": sorted(policy_sampling_seeds),
             "rewards": rewards,
             "all_members_completed_2_to_4_steps": all(
                 2 <= steps <= 4 for steps in environment_steps
