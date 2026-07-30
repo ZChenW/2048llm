@@ -565,7 +565,7 @@ async def _run(
         "rollout_tokens_per_second": (
             completion_tokens / rollout_seconds if rollout_seconds else 0.0
         ),
-        "optimizer_seconds": training_seconds,
+        "backend_train_seconds": training_seconds,
         "backend_train_requests_per_second": (
             train_result.step / training_seconds if training_seconds else 0.0
         ),
@@ -682,7 +682,7 @@ async def _run(
                 "begins immediately before initial ART model registration and "
                 "ends after fresh-backend checkpoint resume inference"
             ),
-            "optimizer_seconds": (
+            "backend_train_seconds": (
                 "covers the maintained LocalBackend.train request only"
             ),
             "rollout_seconds": (

@@ -74,7 +74,7 @@ single zero-signal step, and it must remain visible in later measurements.
 
 The maintained trainers also chose different supported effective settings.
 ART used `paged_adamw_8bit`, per-device batch size four, gradient accumulation
-one, gradient checkpointing, BF16, and no internal maximum-step limit. TRL
+one, gradient checkpointing, BF16, and the long-lived `max_steps=-1`. TRL
 used `adamw_torch_fused`, per-device batch size one, gradient accumulation
 one, gradient checkpointing, BF16, and `max_steps=1`. These optimizer and batch
 differences are recorded confounders; the project did not patch either
