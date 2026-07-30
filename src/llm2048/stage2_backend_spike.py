@@ -32,6 +32,13 @@ from llm2048.policy_contracts import (
 
 BackendName = Literal["art_local", "trl_environment_factory"]
 PRIVATE_WANDB_ACCESS = frozenset({"PRIVATE", "RESTRICTED", "TEAM"})
+ENVIRONMENT_REWARD_COMPONENTS = (
+    "reached_2048",
+    "tile_progress",
+    "score_progress",
+    "game_over_without_2048",
+    "policy_failure",
+)
 BACKEND_FAILURE_MODES: dict[BackendName, tuple[str, ...]] = {
     "art_local": (
         "ART backend imports Megatron registration but omits megatron-core",
@@ -583,6 +590,31 @@ def environment_reward(
         ),
     }
     return EnvironmentReward(total=sum(components.values()), **components)
+
+
+def environment_reward_component_means(
+    rewards: Sequence[Mapping[str, Any]],
+) -> dict[str, float]:
+    """Aggregate every frozen Environment Reward component for telemetry."""
+    if not rewards:
+        raise BackendSpikePreflightError(
+            "Environment Reward telemetry requires at least one completed episode"
+        )
+    means: dict[str, float] = {}
+    for component in ENVIRONMENT_REWARD_COMPONENTS:
+        values: list[float] = []
+        for reward in rewards:
+            value = reward.get(component)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+            ):
+                raise BackendSpikePreflightError(
+                    f"Environment Reward telemetry omitted {component!r}"
+                )
+            values.append(float(value))
+        means[component] = sum(values) / len(values)
+    return means
 
 
 def rollout_group_manifest(config: BackendSpikeConfig) -> dict[str, Any]:

@@ -368,8 +368,11 @@ the maintained library. Checkpoints stay local; reward and trainer metrics go
 to private W&B and local TensorBoard.
 
 The primary-source compatibility research is in
-`docs/research/stage2-environment-grpo-backends.md`; the final backend choice is
-recorded separately in an ADR after both real smoke paths finish.
+`docs/research/stage2-environment-grpo-backends.md`. The measured comparison
+selects ART LocalBackend for the next bounded tracer and rejects TRL
+`environment_factory`; [ADR 0002](docs/adr/0002-select-art-localbackend-for-stage2-spike.md)
+records the evidence, confounders, and the remaining block on long-run
+promotion.
 
 ## Depth-2 Teacher Policy corpus
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -18,6 +19,7 @@ from llm2048.stage2_backend_spike import (
     Stage2TrainingEpisode,
     _source_revision,
     _write_json,
+    environment_reward_component_means,
     implementation_complexity,
     rollout_group_manifest,
     validate_adapter_directory,
@@ -33,6 +35,47 @@ _TOOL_INSTRUCTION = (
     "submit_policy_response exactly once, setting response to the exact "
     "Policy Response string required above."
 )
+
+
+def _trl_training_signal(
+    training_logs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Separate an invoked backward path from an actual GRPO update signal."""
+    step_log = next(
+        (
+            entry
+            for entry in reversed(training_logs)
+            if "loss" in entry and "grad_norm" in entry
+        ),
+        {},
+    )
+    backward_invoked = bool(step_log)
+    reward_std = float(step_log.get("reward_std", 0.0))
+    grad_norm = float(step_log.get("grad_norm", 0.0))
+    loss = float(step_log.get("loss", 0.0))
+    return {
+        "backward_invoked": backward_invoked,
+        "optimization_signal_nonzero": (
+            backward_invoked
+            and math.isfinite(reward_std)
+            and math.isfinite(grad_norm)
+            and reward_std > 0.0
+            and grad_norm > 0.0
+        ),
+        "reward_std": reward_std,
+        "grad_norm": grad_norm,
+        "loss": loss,
+    }
+
+
+def _tensorboard_event_files(output_directory: Path) -> list[str]:
+    return [
+        str(path)
+        for path in sorted(
+            output_directory.rglob("events.out.tfevents.*")
+        )
+        if path.is_file()
+    ]
 
 
 class Trl2048Environment:
@@ -109,6 +152,7 @@ def _run(
     config_sha256: str,
 ) -> dict[str, Any]:
     global _ACTIVE_CONFIG
+    end_to_end_started = time.monotonic()
     import torch
     from datasets import Dataset  # type: ignore[import-untyped]
     from peft import LoraConfig, PeftModel
@@ -210,19 +254,16 @@ def _run(
         peft_config=peft_config,
         environment_factory=Trl2048Environment,
     )
-    run_started = time.monotonic()
+    trainer_train_started = time.monotonic()
     torch.cuda.reset_peak_memory_stats()
     with _GpuMemorySampler() as gpu_sampler:
         train_result = trainer.train()
-        wall_seconds = time.monotonic() - run_started
+        trainer_train_wall_seconds = time.monotonic() - trainer_train_started
     training_logs = list(trainer.state.log_history)
-    backward_observed = any(
-        "loss" in entry and "grad_norm" in entry
-        for entry in training_logs
-    )
-    if train_result.global_step != 1 or not backward_observed:
+    training_signal = _trl_training_signal(training_logs)
+    if train_result.global_step != 1 or not training_signal["backward_invoked"]:
         raise BackendSpikePreflightError(
-            "TRL did not record a real backward and optimizer step"
+            "TRL did not invoke its maintained backward and optimizer path"
         )
     checkpoint = trainer_directory / "checkpoint-1"
     if not checkpoint.is_dir():
@@ -237,9 +278,37 @@ def _run(
         raise BackendSpikePreflightError(
             "TRL checkpoint does not contain optimizer and trainer resume state"
         )
+    training_environments = [
+        environment._evidence() for environment in _CREATED_ENVIRONMENTS
+    ]
+    completed = [
+        environment
+        for environment in training_environments
+        if environment.get("terminal_reason") is not None
+    ]
+    reward_records = [
+        environment["reward"]
+        for environment in completed
+        if isinstance(environment.get("reward"), dict)
+    ]
+    reward_component_means = environment_reward_component_means(
+        reward_records
+    )
+    component_metrics = {
+        f"environment/reward_component/{component}_mean": value
+        for component, value in reward_component_means.items()
+    }
     run = wandb.run
     wandb_url = run.url if run is not None else None
     if run is not None:
+        run.log(
+            {
+                **component_metrics,
+                "telemetry/source_training_global_step": int(
+                    train_result.global_step
+                ),
+            }
+        )
         run.finish()
 
     # Load both model and optimizer/trainer state through the maintained resume API.
@@ -277,14 +346,6 @@ def _run(
             "TRL resume did not preserve global optimizer step 1"
         )
 
-    environments = [
-        environment._evidence() for environment in _CREATED_ENVIRONMENTS
-    ]
-    completed = [
-        environment
-        for environment in environments
-        if environment.get("terminal_reason") is not None
-    ]
     steps = [len(environment.get("steps", [])) for environment in completed]
     rewards = [
         float(environment["reward"]["total"])
@@ -310,6 +371,10 @@ def _run(
         and all(2 <= value <= 4 for value in steps)
     )
     rollout_contract_failure = not all_members_completed_2_to_4_steps
+    multi_turn_markov_demonstrated = (
+        not history_breach and not rollout_contract_failure
+    )
+    zero_signal_failure = not training_signal["optimization_signal_nonzero"]
     rollout_seconds_samples = [
         float(environment["rollout_seconds"])
         for environment in completed
@@ -331,6 +396,19 @@ def _run(
         max(rollout_seconds_samples) if rollout_seconds_samples else 0.0
     )
     optimizer_seconds = float(last_step_log.get("step_time", 0.0))
+    from torch.utils.tensorboard import SummaryWriter
+
+    writer = SummaryWriter(log_dir=str(tensorboard_directory))
+    try:
+        for metric, value in component_metrics.items():
+            writer.add_scalar(metric, value, int(train_result.global_step))
+    finally:
+        writer.close()
+    tensorboard_event_files = _tensorboard_event_files(output_directory)
+    if not tensorboard_event_files:
+        raise BackendSpikePreflightError(
+            "TRL did not write local TensorBoard telemetry"
+        )
     metrics = {
         "peak_torch_allocated_bytes": torch.cuda.max_memory_allocated(),
         "peak_torch_reserved_bytes": torch.cuda.max_memory_reserved(),
@@ -340,7 +418,8 @@ def _run(
             0,
             gpu_sampler.peak_used_bytes - gpu_sampler.baseline_used_bytes,
         ),
-        "wall_seconds": wall_seconds,
+        "wall_seconds": time.monotonic() - end_to_end_started,
+        "trainer_train_wall_seconds": trainer_train_wall_seconds,
         "rollout_seconds": rollout_seconds,
         "rollout_completion_tokens": completion_tokens,
         "rollout_tokens_per_second": (
@@ -363,7 +442,7 @@ def _run(
     result = {
         "schema_version": 1,
         "status": "completed_with_contract_failure"
-        if history_breach or rollout_contract_failure
+        if history_breach or rollout_contract_failure or zero_signal_failure
         else "completed",
         "backend": "trl_environment_factory",
         "config_sha256": config_sha256,
@@ -383,6 +462,7 @@ def _run(
             "observed_rng_seeds": sorted(rng_seeds),
             "environment_steps": steps,
             "rewards": rewards,
+            "reward_component_means": reward_component_means,
             "all_members_completed_2_to_4_steps": (
                 all_members_completed_2_to_4_steps
             ),
@@ -390,7 +470,8 @@ def _run(
         },
         "gradient_update": {
             "optimizer_step": int(train_result.global_step),
-            "backward_observed": backward_observed,
+            **training_signal,
+            "zero_signal_failure": zero_signal_failure,
             "trainer_metrics": train_result.metrics,
             "trainer_log_history": training_logs,
         },
@@ -409,15 +490,49 @@ def _run(
             "wandb_url": wandb_url,
             "model_checkpoint_uploaded": False,
             "tensorboard_directory": str(tensorboard_directory),
+            "tensorboard_event_files": tensorboard_event_files,
+            "wandb_reward_component_metrics": sorted(component_metrics),
+            "tensorboard_reward_component_metrics": sorted(
+                component_metrics
+            ),
         },
         "metrics": metrics,
+        "measurement_boundaries": {
+            "wall_seconds": (
+                "begins before TRL model/tokenizer initialization and ends "
+                "after maintained checkpoint resume"
+            ),
+            "trainer_train_wall_seconds": (
+                "covers GRPOTrainer.train only and excludes model setup/resume"
+            ),
+            "optimizer_seconds": (
+                "uses the maintained trainer's logged step_time"
+            ),
+            "rollout_seconds": (
+                "uses the longest completed environment instance"
+            ),
+            "external_gpu_used_bytes": (
+                "sampled only while GRPOTrainer.train was running; excludes "
+                "initial model setup and checkpoint resume"
+            ),
+            "torch_peak_memory": (
+                "reset immediately before GRPOTrainer.train and read after "
+                "checkpoint resume; excludes initial model setup"
+            ),
+        },
         "environment_contract": {
             "environment_factory_experimental": True,
-            "markov_policy": not history_breach,
+            "markov_policy": multi_turn_markov_demonstrated,
+            "markov_policy_status": (
+                "demonstrated"
+                if multi_turn_markov_demonstrated
+                else "not_demonstrated"
+            ),
             "multi_turn_markov_policy_demonstrated": (
-                not history_breach and not rollout_contract_failure
+                multi_turn_markov_demonstrated
             ),
             "history_retained_by_native_tool_loop": history_breach,
+            "maintained_history_loop_incompatible_with_markov_policy": True,
             "tool_interface_suffix_only": True,
             "policy_failure_terminates_without_retry": True,
             "environment_reward_frozen": True,

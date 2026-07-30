@@ -22,6 +22,7 @@ from llm2048.stage2_backend_spike import (
     Stage2TrainingEpisode,
     _source_revision,
     _write_json,
+    environment_reward_component_means,
     implementation_complexity,
     rollout_group_manifest,
     validate_adapter_directory,
@@ -196,6 +197,26 @@ def _policy_sampling_seed(
         + member_index * config.rollout.horizon
         + step_index
     )
+
+
+def _validated_art_environment_steps(
+    trajectories: list[Any],
+    expected_group_size: int,
+) -> list[int]:
+    """Fail closed unless the maintained backend produced the ticket horizon."""
+    steps = [
+        int(trajectory.metrics.get("environment_steps", 0))
+        for trajectory in trajectories
+    ]
+    if (
+        len(steps) != expected_group_size
+        or not all(2 <= step_count <= 4 for step_count in steps)
+    ):
+        raise BackendSpikePreflightError(
+            "ART Rollout Group did not complete 2 to 4 environment steps "
+            "for every member"
+        )
+    return steps
 
 
 async def _rollout(
@@ -377,6 +398,10 @@ async def _run(
                 raise BackendSpikePreflightError(
                     "ART did not produce the complete registered Rollout Group"
                 )
+            environment_steps = _validated_art_environment_steps(
+                list(groups[0].trajectories),
+                config.rollout.group_size,
+            )
             trajectory_seeds = {
                 trajectory.metadata["rng_seed"]
                 for trajectory in groups[0].trajectories
@@ -418,7 +443,7 @@ async def _run(
             training_seconds = time.monotonic() - training_started
             if train_result.step != 1 or not train_result.checkpoint_path:
                 raise BackendSpikePreflightError(
-                    "ART did not execute and save optimizer step 1"
+                    "ART did not execute and save backend train step 1"
                 )
             if (
                 train_result.metrics.get("data/step_num_groups_trainable", 0.0)
@@ -461,7 +486,7 @@ async def _run(
             resumed_step = await resumed_model.get_step()
             if resumed_step != train_result.step:
                 raise BackendSpikePreflightError(
-                    "ART checkpoint resume did not preserve the optimizer step"
+                    "ART checkpoint resume did not preserve the backend train step"
                 )
             resume_episode = Stage2TrainingEpisode(config)
             resume_started = time.monotonic()
@@ -495,11 +520,21 @@ async def _run(
         int(trajectory.metrics["completion_tokens"])
         for trajectory in ordered_trajectories
     )
-    environment_steps = [
-        int(trajectory.metrics["environment_steps"])
-        for trajectory in ordered_trajectories
-    ]
     rewards = [trajectory.reward for trajectory in ordered_trajectories]
+    reward_component_means = environment_reward_component_means(
+        [
+            {
+                "reached_2048": trajectory.metrics["reached_2048_reward"],
+                "tile_progress": trajectory.metrics["tile_progress_reward"],
+                "score_progress": trajectory.metrics["score_progress_reward"],
+                "game_over_without_2048": trajectory.metrics[
+                    "game_over_without_2048_reward"
+                ],
+                "policy_failure": trajectory.metrics["policy_failure_reward"],
+            }
+            for trajectory in ordered_trajectories
+        ]
+    )
     policy_sampling_seed_matrix = [
         [
             int(seed)
@@ -513,6 +548,9 @@ async def _run(
         trajectory.metadata["action_sequence"].split(",")
         for trajectory in ordered_trajectories
     ]
+    effective_gradient_steps = int(
+        train_result.metrics["data/step_num_gradient_steps"]
+    )
     metrics = {
         "peak_torch_allocated_bytes": torch.cuda.max_memory_allocated(),
         "peak_torch_reserved_bytes": torch.cuda.max_memory_reserved(),
@@ -528,8 +566,13 @@ async def _run(
             completion_tokens / rollout_seconds if rollout_seconds else 0.0
         ),
         "optimizer_seconds": training_seconds,
-        "optimizer_steps_per_second": (
+        "backend_train_requests_per_second": (
             train_result.step / training_seconds if training_seconds else 0.0
+        ),
+        "effective_gradient_steps_per_second": (
+            effective_gradient_steps / training_seconds
+            if training_seconds
+            else 0.0
         ),
         "wall_seconds": time.monotonic() - run_started,
         "resume_generation_seconds": resume_seconds,
@@ -554,6 +597,12 @@ async def _run(
             / len(groups[0].trajectories),
             train_result.step,
         )
+        for component, value in reward_component_means.items():
+            writer.add_scalar(
+                f"environment/reward_component/{component}_mean",
+                value,
+                train_result.step,
+            )
     finally:
         writer.close()
 
@@ -587,14 +636,18 @@ async def _run(
             "policy_sampling_seed_schedules": policy_sampling_seed_matrix,
             "action_sequences": action_sequences,
             "rewards": rewards,
+            "reward_component_means": reward_component_means,
             "all_members_completed_2_to_4_steps": all(
                 2 <= steps <= 4 for steps in environment_steps
             ),
         },
         "gradient_update": {
-            "optimizer_step": train_result.step,
+            "backend_train_step": train_result.step,
             "backward_observed": "loss/grad_norm" in train_result.metrics,
             "trainer_metrics": train_result.metrics,
+            "effective_gradient_steps": effective_gradient_steps,
+            "submitted_histories": sum(environment_steps),
+            "gradient_accumulation_control_exposed_by_backend": False,
         },
         "checkpoint": {
             **adapter,
@@ -603,6 +656,9 @@ async def _run(
             "resumed_response": resumed_response,
             "resumed_response_parsed": contract.parsed,
             "resumed_response_policy_failure": contract.policy_failure,
+            "adapter_and_step_discovery_resume_demonstrated": True,
+            "fresh_inference_resume_demonstrated": True,
+            "optimizer_and_rng_resume_supported": False,
         },
         "telemetry": {
             "wandb_entity": entity,
@@ -611,8 +667,36 @@ async def _run(
             "wandb_url": wandb_url,
             "model_checkpoint_uploaded": False,
             "tensorboard_directory": str(tensorboard_directory),
+            "wandb_reward_component_metrics": [
+                f"train/{component}_reward"
+                for component in reward_component_means
+            ],
+            "tensorboard_reward_component_metrics": [
+                f"environment/reward_component/{component}_mean"
+                for component in reward_component_means
+            ],
         },
         "metrics": metrics,
+        "measurement_boundaries": {
+            "wall_seconds": (
+                "begins immediately before initial ART model registration and "
+                "ends after fresh-backend checkpoint resume inference"
+            ),
+            "optimizer_seconds": (
+                "covers the maintained LocalBackend.train request only"
+            ),
+            "rollout_seconds": (
+                "covers concurrent generation of the registered Rollout Group"
+            ),
+            "external_gpu_used_bytes": (
+                "sampled from initial ART registration through fresh-backend "
+                "checkpoint resume inference"
+            ),
+            "torch_peak_memory": (
+                "reset before initial ART registration and read after "
+                "fresh-backend checkpoint resume inference"
+            ),
+        },
         "environment_contract": {
             "markov_policy": True,
             "separate_history_per_environment_step": True,

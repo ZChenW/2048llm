@@ -1,6 +1,6 @@
 # Stage 2 Environment GRPO backend API research
 
-Date: 2026-07-31  
+Date: 2026-07-31
 Scope: GitHub issue #12, ART LocalBackend versus TRL `environment_factory`
 
 The `research` skill normally delegates source reading to a background agent.
@@ -103,11 +103,16 @@ trainer loop.
   [Unsloth release metadata](https://pypi.org/pypi/unsloth/2026.7.4/json),
   [TRL v1.9.2 release metadata](https://pypi.org/pypi/trl/1.9.2/json).
 
-## Prototype hypothesis
+## Measured outcome
 
-ART LocalBackend is the leading candidate because `additional_histories`
-preserves the Markov Policy without taking ownership of GRPO. TRL
-`environment_factory` remains a real measured candidate, but its maintained
-multi-turn loop is expected to fail the current-board-only prefix contract.
-The final ADR must use actual local gradient, VRAM, throughput, checkpoint,
-resume, and telemetry evidence before accepting ART and deferring TRL.
+The comparison selected exactly ART LocalBackend for the next bounded tracer.
+ART completed four three-step Training Episodes with nonzero reward variance,
+ran its maintained backward/optimizer path, saved a standard adapter, and
+served it from a fresh backend. TRL produced direct assistant text instead of
+tool calls: every candidate became a one-step Policy Failure, reward variance,
+loss, and gradient norm were zero, and the required multi-turn Markov contract
+was not demonstrated.
+
+The evidence, effective-configuration confounders, telemetry supplements,
+measurement boundaries, and the block on long-run promotion are recorded in
+[ADR 0002](../adr/0002-select-art-localbackend-for-stage2-spike.md).

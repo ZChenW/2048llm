@@ -16,6 +16,7 @@ from llm2048.stage2_backend_spike import (
     Stage2TrainingEpisode,
     dry_run,
     environment_reward,
+    environment_reward_component_means,
     implementation_complexity,
     rollout_group_manifest,
     validate_adapter_directory,
@@ -28,6 +29,7 @@ from llm2048.stage2_art_backend import (
     _logprob_calculation_chunk_size,
     _policy_sampling_seed,
     _training_completion_token_count,
+    _validated_art_environment_steps,
 )
 
 
@@ -222,13 +224,112 @@ class ArtifactContractTests(unittest.TestCase):
             0,
         )
 
-    def test_art_backend_owns_the_single_optimizer_step(self) -> None:
+    def test_art_backend_owns_the_single_train_request(self) -> None:
         config, _ = BackendSpikeConfig.load(CONFIG_PATH)
 
         trainer_args = _internal_model_config(config)["trainer_args"]
 
         self.assertNotIn("max_steps", trainer_args)
         self.assertEqual(config.training.optimizer_steps, 1)
+
+    def test_art_rollout_fails_closed_before_training_on_short_member(
+        self,
+    ) -> None:
+        valid = [
+            SimpleNamespace(metrics={"environment_steps": 3})
+            for _ in range(4)
+        ]
+        self.assertEqual(_validated_art_environment_steps(valid, 4), [3] * 4)
+
+        invalid = [
+            SimpleNamespace(metrics={"environment_steps": steps})
+            for steps in (3, 3, 1, 3)
+        ]
+        with self.assertRaisesRegex(
+            BackendSpikePreflightError,
+            "did not complete 2 to 4",
+        ):
+            _validated_art_environment_steps(invalid, 4)
+
+    def test_reward_component_means_include_every_frozen_component(
+        self,
+    ) -> None:
+        means = environment_reward_component_means(
+            [
+                {
+                    "reached_2048": 0.0,
+                    "tile_progress": 0.0,
+                    "score_progress": 0.0,
+                    "game_over_without_2048": 0.0,
+                    "policy_failure": -1.25,
+                },
+                {
+                    "reached_2048": 0.0,
+                    "tile_progress": 0.0,
+                    "score_progress": 0.25,
+                    "game_over_without_2048": 0.0,
+                    "policy_failure": 0.0,
+                },
+            ]
+        )
+
+        self.assertEqual(
+            means,
+            {
+                "reached_2048": 0.0,
+                "tile_progress": 0.0,
+                "score_progress": 0.125,
+                "game_over_without_2048": 0.0,
+                "policy_failure": -0.625,
+            },
+        )
+
+    def test_trl_zero_reward_variance_is_not_claimed_as_learning_signal(
+        self,
+    ) -> None:
+        signal = trl_backend._trl_training_signal(
+            [
+                {
+                    "loss": 0.0,
+                    "grad_norm": 0.0,
+                    "reward_std": 0.0,
+                }
+            ]
+        )
+
+        self.assertTrue(signal["backward_invoked"])
+        self.assertFalse(signal["optimization_signal_nonzero"])
+
+        nonzero_gradient_with_zero_surrogate = trl_backend._trl_training_signal(
+            [
+                {
+                    "loss": 0.0,
+                    "grad_norm": 1.5,
+                    "reward_std": 0.25,
+                }
+            ]
+        )
+        self.assertTrue(
+            nonzero_gradient_with_zero_surrogate[
+                "optimization_signal_nonzero"
+            ]
+        )
+
+    def test_trl_tensorboard_discovery_reports_actual_event_file(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            event = output / "trainer" / "runs" / "run-1" / (
+                "events.out.tfevents.fixture"
+            )
+            event.parent.mkdir(parents=True)
+            event.write_bytes(b"event")
+
+            self.assertEqual(
+                trl_backend._tensorboard_event_files(output),
+                [str(event)],
+            )
 
     def test_art_training_requires_token_id_logprobs(self) -> None:
         valid = SimpleNamespace(
