@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm2048"
+version = "0.1.0"
+description = "Reproducible experiment runner for 2048 Student Policy research"
+requires-python = ">=3.11"
+dependencies = [
+  "tensorboard>=2.17",
+  "wandb>=0.18",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11",
+]
+
+[project.scripts]
+llm2048-experiment = "llm2048.experiment_runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+module = ["tensorboard.*"]
+ignore_missing_imports = true

@@ -10,3 +10,7 @@ artifacts/
 data/sft/*.jsonl
 *.bin
 data/sft_focused/*.jsonl
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/

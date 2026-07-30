@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "experiment_name": "issue-2-tracer",
+  "seed": 2048,
+  "total_steps": 4,
+  "fixture": {
+    "board": [
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [2, 2, 0, 0]
+    ],
+    "policy_actions": ["LEFT", "UP", "RIGHT", "DOWN"],
+    "rewards": [1.0, 0.5, -0.25, 1.25]
+  },
+  "telemetry": {
+    "wandb_project": "2048llm-fixture"
+  }
+}
