@@ -993,13 +993,25 @@ def run_teacher_guided_block(
                 metrics=initialization["metrics"],
             )
 
-        training_rows = _training_rows(
+        training_rows, prompt_budget_audit = _training_rows(
             processor=processor,
             variant=variant,
             records=data_plan["pool_records"],
             tau=data_plan["tau"],
             max_prompt_length=config.grpo["max_prompt_length"],
         )
+        prompt_budget_audit["tokenizer"] = {
+            "model_id": config.model["id"],
+            "revision": config.model["revision"],
+        }
+        prompt_audit_path = output_directory / "prompt_budget_audit.json"
+        if resumed and prompt_audit_path.is_file():
+            previous_prompt_audit = _read_json_object(prompt_audit_path)
+            if previous_prompt_audit != prompt_budget_audit:
+                raise TeacherGuidedBlockPreflightError(
+                    "prompt budget audit changed before resume"
+                )
+        _write_json(prompt_audit_path, prompt_budget_audit)
         train_dataset = stack.dataset_class.from_list(training_rows)
         reward_events_path = (
             output_directory / "training" / "reward-events.jsonl"
@@ -1068,6 +1080,7 @@ def run_teacher_guided_block(
                 "validation_snapshot"
             ],
             "resolved_config": config.resolved(),
+            "prompt_budget_audit": prompt_budget_audit,
             "resume": resume_evidence,
             "checkpoint": checkpoint,
         }
@@ -1097,6 +1110,7 @@ def run_teacher_guided_block(
                 "starting_point": starting_point,
                 "initialization": initialization,
                 "training": training_summary,
+                "prompt_budget_audit": prompt_budget_audit,
                 "resume": resume_evidence,
                 "checkpoint": {
                     **checkpoint,
@@ -1169,6 +1183,7 @@ def run_teacher_guided_block(
                 "starting_point": starting_point,
                 "initialization": initialization,
                 "training": training_summary,
+                "prompt_budget_audit": prompt_budget_audit,
                 "resume": resume_evidence,
                 "step_250": final_evaluation,
                 "comparison_to_initialization": comparison,
@@ -1589,8 +1604,9 @@ def _training_rows(
     records: Sequence[Mapping[str, Any]],
     tau: float,
     max_prompt_length: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    prompt_lengths: list[int] = []
     for record in records:
         prompt = _render_prompt(processor, variant, record["board"])
         encoded = processor(prompt, add_special_tokens=False)
@@ -1602,6 +1618,7 @@ def _training_rows(
                 "rendered Qwen policy prompt exceeds the fixed prompt budget: "
                 f"{len(token_ids)} > {max_prompt_length}"
             )
+        prompt_lengths.append(len(token_ids))
         action_scores = {
             str(action).upper(): value
             for action, value in record["action_scores"].items()
@@ -1622,7 +1639,15 @@ def _training_rows(
                 "teacher_margin_scale": tau,
             }
         )
-    return rows
+    return rows, {
+        "variant": variant,
+        "boards": len(rows),
+        "max_prompt_length": max_prompt_length,
+        "minimum_prompt_tokens": min(prompt_lengths),
+        "maximum_prompt_tokens": max(prompt_lengths),
+        "over_budget": 0,
+        "status": "passed",
+    }
 
 
 def _render_prompt(
@@ -2109,6 +2134,7 @@ def _build_run_manifest(
         "resolved_config.json",
         "data_manifest.json",
         "run_identity.json",
+        "prompt_budget_audit.json",
         "evaluation/initialization.jsonl",
         "evaluation/initialization.json",
         "training/reward-events.jsonl",
