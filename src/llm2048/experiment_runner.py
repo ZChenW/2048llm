@@ -25,6 +25,7 @@ from llm2048.policy_contracts import (
     change_making_actions,
     enforce_policy_response,
 )
+from llm2048.teacher_corpus import CorpusError, export_teacher_corpus
 
 
 class ConfigurationError(ValueError):
@@ -769,7 +770,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a reproducible 2048 Student Policy experiment"
     )
-    parser.add_argument("--config", required=True, type=Path)
+    configuration = parser.add_mutually_exclusive_group(required=True)
+    configuration.add_argument("--config", type=Path)
+    configuration.add_argument("--teacher-corpus-config", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stop-after-step", type=int)
@@ -779,13 +782,23 @@ def _parser() -> argparse.ArgumentParser:
 def main(arguments: Sequence[str] | None = None) -> int:
     parsed = _parser().parse_args(arguments)
     try:
-        result = run_experiment(
-            config_path=parsed.config,
-            output_directory=parsed.output_dir,
-            resume_path=parsed.resume,
-            stop_after_step=parsed.stop_after_step,
-        )
-    except (ConfigurationError, RuntimeError) as error:
+        if parsed.teacher_corpus_config is not None:
+            if parsed.resume is not None or parsed.stop_after_step is not None:
+                raise ConfigurationError(
+                    "--resume and --stop-after-step are not supported for corpus exports"
+                )
+            result = export_teacher_corpus(
+                config_path=parsed.teacher_corpus_config,
+                output_directory=parsed.output_dir,
+            )
+        else:
+            result = run_experiment(
+                config_path=parsed.config,
+                output_directory=parsed.output_dir,
+                resume_path=parsed.resume,
+                stop_after_step=parsed.stop_after_step,
+            )
+    except (ConfigurationError, CorpusError, RuntimeError) as error:
         print(f"experiment runner error: {error}", file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))

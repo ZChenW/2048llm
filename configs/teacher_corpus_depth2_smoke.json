@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "export_name": "retained-100m-depth2-smoke",
+  "seed": 2048,
+  "checkpoint": {
+    "path": "../runs/zhihu_repro_20260729/best/ckpt_100000000.bin",
+    "sha256": "fbb1acd009a6ac55ca150b7939a0ac8617d58ec683bcca99252407a624dd001b",
+    "metadata_path": "../runs/zhihu_repro_20260729/best/ckpt_100000000.json",
+    "metadata_sha256": "4160f4f8c39b2d1d587bbb0fe1ce8f9743ddd9353afbfdd99b0777d94a9de8a5"
+  },
+  "teacher_policy": {
+    "search_depth": 2,
+    "source": "retained_100m_teacher_policy"
+  },
+  "exporter": {
+    "source_path": "../TD-learning-Teacher/zhihu_version/export_teacher.cpp"
+  },
+  "corpus": {
+    "splits": {
+      "train": {
+        "natural": 5,
+        "hard": 3,
+        "late": 2
+      },
+      "validation": {
+        "natural": 5,
+        "hard": 3,
+        "late": 2
+      },
+      "test": {
+        "natural": 5,
+        "hard": 3,
+        "late": 2
+      }
+    },
+    "teacher_core_count": 10,
+    "late_min_max_tile": 512,
+    "max_trajectories": 200
+  }
+}

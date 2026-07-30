@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 typedef unsigned long long Board;
@@ -234,10 +236,14 @@ const int JSON_ACTION_ORDER[4] = {2, 3, 0, 1};
 struct Config {
     std::string weights_path;
     std::string out_path;
+    std::string out_dir;
     int samples = 1000;
     int depth = 1;
     unsigned int seed = 1;
     int max_games = 10000;
+    int split_targets[3][3] = {};
+    int teacher_core_count = 0;
+    int late_min_max_tile = 512;
     int min_max_tile = 0;
     double hard_state_ratio = 0.30;
     int report_every = 1000;
@@ -287,6 +293,14 @@ void usage(const char * argv0){
         << "  --min-max-tile N          Minimum max tile value for sampled boards\n"
         << "  --hard-state-ratio FLOAT  Target minimum fraction of hard/ambiguous states\n"
         << "  --report-every N          Progress report interval, 0 disables progress\n";
+    std::cout
+        << "\nLeakage-safe corpus mode:\n"
+        << "  --out-dir PATH            Write train/validation/test JSONL artifacts\n"
+        << "  --split-target S:N:H:L    Exact natural/hard/late target for a split\n"
+        << "                            (S is train, validation, or test; repeat 3x)\n"
+        << "  --teacher-core-count N    Immutable train subset size\n"
+        << "  --late-min-max-tile N     Late-state threshold (must be 512)\n"
+        << "  --max-trajectories N      Maximum complete trajectories to scan\n";
 }
 
 bool parse_int(const char * text, int * out){
@@ -329,6 +343,27 @@ bool parse_args(int argc, char ** argv, Config * cfg){
             if (!parse_uint(argv[++i], &cfg->seed)) return false;
         }else if (std::strcmp(arg, "--out") == 0 && i + 1 < argc){
             cfg->out_path = argv[++i];
+        }else if (std::strcmp(arg, "--out-dir") == 0 && i + 1 < argc){
+            cfg->out_dir = argv[++i];
+        }else if (std::strcmp(arg, "--split-target") == 0 && i + 1 < argc){
+            std::string value = argv[++i];
+            std::replace(value.begin(), value.end(), ':', ' ');
+            std::istringstream input(value);
+            std::string split;
+            int natural = -1, hard = -1, late = -1;
+            std::string extra;
+            if (!(input >> split >> natural >> hard >> late) || (input >> extra)) return false;
+            int split_idx = split == "train" ? 0 : split == "validation" ? 1 : split == "test" ? 2 : -1;
+            if (split_idx < 0 || natural < 0 || hard < 0 || late < 0) return false;
+            cfg->split_targets[split_idx][0] = natural;
+            cfg->split_targets[split_idx][1] = hard;
+            cfg->split_targets[split_idx][2] = late;
+        }else if (std::strcmp(arg, "--teacher-core-count") == 0 && i + 1 < argc){
+            if (!parse_int(argv[++i], &cfg->teacher_core_count)) return false;
+        }else if (std::strcmp(arg, "--late-min-max-tile") == 0 && i + 1 < argc){
+            if (!parse_int(argv[++i], &cfg->late_min_max_tile)) return false;
+        }else if (std::strcmp(arg, "--max-trajectories") == 0 && i + 1 < argc){
+            if (!parse_int(argv[++i], &cfg->max_games)) return false;
         }else if (std::strcmp(arg, "--max-games") == 0 && i + 1 < argc){
             if (!parse_int(argv[++i], &cfg->max_games)) return false;
         }else if (std::strcmp(arg, "--min-max-tile") == 0 && i + 1 < argc){
@@ -341,11 +376,21 @@ bool parse_args(int argc, char ** argv, Config * cfg){
             return false;
         }
     }
-    return !cfg->weights_path.empty()
-        && !cfg->out_path.empty()
+    if (cfg->weights_path.empty() || cfg->max_games <= 0 || (cfg->depth != 1 && cfg->depth != 2)) return false;
+    if (!cfg->out_dir.empty()){
+        if (!cfg->out_path.empty() || cfg->depth != 2 || cfg->late_min_max_tile != 512) return false;
+        int train_total = 0;
+        for (int stratum = 0; stratum < 3; stratum ++) train_total += cfg->split_targets[0][stratum];
+        if (train_total <= 0 || cfg->teacher_core_count <= 0 || cfg->teacher_core_count > train_total) return false;
+        for (int split = 0; split < 3; split ++){
+            int total = 0;
+            for (int stratum = 0; stratum < 3; stratum ++) total += cfg->split_targets[split][stratum];
+            if (total <= 0) return false;
+        }
+        return true;
+    }
+    return !cfg->out_path.empty()
         && cfg->samples > 0
-        && (cfg->depth == 1 || cfg->depth == 2)
-        && cfg->max_games > 0
         && cfg->hard_state_ratio >= 0.0
         && cfg->hard_state_ratio <= 1.0;
 }
@@ -462,19 +507,33 @@ void write_sample_json(std::ostream & out, const Sample & sample, int depth){
         }
     }
     out << "],\"action_scores\":{";
-    bool first_score = true;
-    for (int ordered_action : JSON_ACTION_ORDER){
+    for (int order = 0; order < 4; order ++){
+        if (order) out << ",";
+        int ordered_action = JSON_ACTION_ORDER[order];
+        const ActionScore * found = nullptr;
         for (const auto & action : sample.actions){
-            if (action.action != ordered_action) continue;
-            if (!first_score) out << ",";
-            first_score = false;
-            out << "\"" << action.name << "\":" << action.score;
+            if (action.action == ordered_action) found = &action;
         }
+        out << "\"" << ACTION_NAMES[ordered_action] << "\":";
+        if (found) out << found->score;
+        else out << "null";
     }
     out << "},\"action_ranking\":[";
+    bool first_rank = true;
     for (size_t i = 0; i < sample.actions.size(); i ++){
-        if (i) out << ",";
+        if (!first_rank) out << ",";
+        first_rank = false;
         out << "\"" << sample.actions[i].name << "\"";
+    }
+    for (int ordered_action : JSON_ACTION_ORDER){
+        bool legal = false;
+        for (const auto & action : sample.actions){
+            if (action.action == ordered_action) legal = true;
+        }
+        if (legal) continue;
+        if (!first_rank) out << ",";
+        first_rank = false;
+        out << "\"" << ACTION_NAMES[ordered_action] << "\"";
     }
     out << "]";
     out << ",\"teacher_action\":\"" << (sample.actions.empty() ? "" : sample.actions[0].name) << "\"";
@@ -565,6 +624,224 @@ bool load_weights(const std::string & path){
     return true;
 }
 
+const char * SPLIT_NAMES[3] = {"train", "validation", "test"};
+const char * STRATUM_NAMES[3] = {"natural", "hard", "late"};
+
+unsigned long long splitmix64(unsigned long long value){
+    value += 0x9E3779B97F4A7C15uLL;
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9uLL;
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EBuLL;
+    return value ^ (value >> 31);
+}
+
+Board canonical_orbit_board(Board board){
+    auto copies = sym_copies(board);
+    return *std::min_element(copies.begin(), copies.end());
+}
+
+int choose_split(const Config & cfg, int trajectory_id){
+    int totals[3] = {};
+    int grand_total = 0;
+    for (int split = 0; split < 3; split ++){
+        for (int stratum = 0; stratum < 3; stratum ++) totals[split] += cfg.split_targets[split][stratum];
+        grand_total += totals[split];
+    }
+    unsigned long long mixed = splitmix64(((unsigned long long)cfg.seed << 32) ^ (unsigned long long)trajectory_id);
+    int choice = (int)(mixed % (unsigned long long)grand_total);
+    for (int split = 0; split < 3; split ++){
+        if (choice < totals[split]) return split;
+        choice -= totals[split];
+    }
+    return 2;
+}
+
+int exclusive_stratum(const Sample & sample, const Config & cfg){
+    if (sample.max_tile >= cfg.late_min_max_tile) return 2;
+    if (sample.hard) return 1;
+    return 0;
+}
+
+bool targets_complete(const Config & cfg, int kept[3][3]){
+    for (int split = 0; split < 3; split ++){
+        for (int stratum = 0; stratum < 3; stratum ++){
+            if (kept[split][stratum] < cfg.split_targets[split][stratum]) return false;
+        }
+    }
+    return true;
+}
+
+const ActionScore * find_action(const Sample & sample, int action_id){
+    for (const auto & action : sample.actions){
+        if (action.action == action_id) return &action;
+    }
+    return nullptr;
+}
+
+void write_corpus_record(
+    std::ostream & out,
+    const Sample & sample,
+    int split,
+    int stratum,
+    int record_number,
+    int trajectory_id,
+    int trajectory_step,
+    int symmetry_id,
+    bool teacher_core
+){
+    out << std::setprecision(17);
+    out << "{\"schema_version\":1";
+    out << ",\"record_id\":\"" << SPLIT_NAMES[split] << "-" << std::setw(8)
+        << std::setfill('0') << record_number << std::setfill(' ') << "\"";
+    out << ",\"board\":";
+    write_board_json(out, sample.board);
+    out << ",\"valid_moves\":[";
+    bool first = true;
+    for (int action_id : JSON_ACTION_ORDER){
+        const ActionScore * action = find_action(sample, action_id);
+        if (!action) continue;
+        if (!first) out << ",";
+        first = false;
+        out << "\"" << action->name << "\"";
+    }
+    out << "],\"action_scores\":{";
+    for (int order = 0; order < 4; order ++){
+        if (order) out << ",";
+        int action_id = JSON_ACTION_ORDER[order];
+        const ActionScore * action = find_action(sample, action_id);
+        out << "\"" << ACTION_NAMES[action_id] << "\":";
+        if (action) out << action->score;
+        else out << "null";
+    }
+    out << "},\"action_ranking\":[";
+    first = true;
+    for (const auto & action : sample.actions){
+        if (!first) out << ",";
+        first = false;
+        out << "\"" << action.name << "\"";
+    }
+    for (int action_id : JSON_ACTION_ORDER){
+        if (find_action(sample, action_id)) continue;
+        if (!first) out << ",";
+        first = false;
+        out << "\"" << ACTION_NAMES[action_id] << "\"";
+    }
+    out << "]";
+    out << ",\"teacher_action\":\"" << sample.actions[0].name << "\"";
+    out << ",\"max_tile\":" << sample.max_tile;
+    out << ",\"empty_cells\":" << sample.empty_cells;
+    out << ",\"legal_move_count\":" << sample.legal_move_count;
+    out << ",\"top1_score\":" << sample.top1_score;
+    out << ",\"top2_score\":" << sample.top2_score;
+    out << ",\"score_margin\":" << sample.score_margin;
+    out << ",\"search_depth\":2";
+    out << ",\"source\":\"retained_100m_teacher_policy\"";
+    out << ",\"split\":\"" << SPLIT_NAMES[split] << "\"";
+    out << ",\"stratum\":\"" << STRATUM_NAMES[stratum] << "\"";
+    out << ",\"teacher_core\":" << (teacher_core ? "true" : "false");
+    out << ",\"lineage\":{";
+    out << "\"trajectory_id\":\"trajectory-" << std::setw(10) << std::setfill('0')
+        << trajectory_id << std::setfill(' ') << "\"";
+    out << ",\"trajectory_step\":" << trajectory_step;
+    out << ",\"orbit_id\":\"" << std::hex << std::setw(16) << std::setfill('0')
+        << canonical_orbit_board(sample.board) << std::dec << std::setfill(' ') << "\"";
+    out << ",\"symmetry_id\":" << symmetry_id;
+    out << "}}\n";
+}
+
+int export_corpus(const Config & cfg){
+    std::filesystem::create_directories(cfg.out_dir);
+    std::ofstream outputs[3];
+    for (int split = 0; split < 3; split ++){
+        outputs[split].open(std::filesystem::path(cfg.out_dir) / (std::string(SPLIT_NAMES[split]) + ".jsonl"));
+        if (!outputs[split]){
+            std::cerr << "failed to open " << SPLIT_NAMES[split] << " corpus artifact\n";
+            return 1;
+        }
+    }
+
+    int kept[3][3] = {};
+    int record_numbers[3] = {};
+    int core_kept[3] = {};
+    int train_total = 0;
+    for (int stratum = 0; stratum < 3; stratum ++) train_total += cfg.split_targets[0][stratum];
+    int core_targets[3] = {};
+    for (int stratum = 0; stratum < 3; stratum ++){
+        core_targets[stratum] = (int)(
+            (long long)cfg.teacher_core_count
+            * (long long)cfg.split_targets[0][stratum]
+            / (long long)train_total
+        );
+    }
+    int assigned_core = core_targets[0] + core_targets[1] + core_targets[2];
+    for (int stratum = 0; assigned_core < cfg.teacher_core_count; stratum = (stratum + 1) % 3){
+        if (core_targets[stratum] < cfg.split_targets[0][stratum]){
+            core_targets[stratum] += 1;
+            assigned_core += 1;
+        }
+    }
+
+    std::mt19937 environment_rng(cfg.seed);
+    std::unordered_set<Board> retained_orbits;
+    int trajectories_seen = 0;
+    for (; trajectories_seen < cfg.max_games && !targets_complete(cfg, kept); trajectories_seen ++){
+        int split = choose_split(cfg, trajectories_seen);
+        Board board = 0;
+        board = fill_rand(board, environment_rng);
+        board = fill_rand(board, environment_rng);
+        int trajectory_step = 0;
+        while (true){
+            Sample natural_sample = make_sample(board, cfg.depth);
+            if (natural_sample.legal_move_count == 0) break;
+
+            // Symmetry augmentation belongs to online training. Corpus records
+            // retain identity lineage plus a canonical D4 orbit for leakage checks.
+            int symmetry_id = 0;
+            Board transformed_board = board;
+            Sample sample = make_sample(transformed_board, cfg.depth);
+            int stratum = exclusive_stratum(sample, cfg);
+            Board orbit = canonical_orbit_board(transformed_board);
+            if (
+                kept[split][stratum] < cfg.split_targets[split][stratum]
+                && retained_orbits.insert(orbit).second
+            ){
+                bool in_core = split == 0 && core_kept[stratum] < core_targets[stratum];
+                write_corpus_record(
+                    outputs[split],
+                    sample,
+                    split,
+                    stratum,
+                    record_numbers[split]++,
+                    trajectories_seen,
+                    trajectory_step,
+                    symmetry_id,
+                    in_core
+                );
+                kept[split][stratum] += 1;
+                if (in_core) core_kept[stratum] += 1;
+            }
+
+            Board next_afterstate = natural_sample.actions[0].afterstate;
+            if (max_tile_value(next_afterstate) >= 8192) break;
+            board = fill_rand(next_afterstate, environment_rng);
+            trajectory_step += 1;
+        }
+    }
+
+    for (int split = 0; split < 3; split ++){
+        outputs[split].close();
+    }
+    if (!targets_complete(cfg, kept)){
+        std::cerr << "corpus targets not reached before max-trajectories=" << cfg.max_games << "\n";
+        for (int split = 0; split < 3; split ++){
+            std::cerr << SPLIT_NAMES[split] << ": natural=" << kept[split][0]
+                      << " hard=" << kept[split][1] << " late=" << kept[split][2] << "\n";
+        }
+        return 2;
+    }
+    std::cerr << "exported leakage-safe corpus from " << trajectories_seen << " trajectories\n";
+    return 0;
+}
+
 int main(int argc, char ** argv){
     Config cfg;
     if (!parse_args(argc, argv, &cfg)){
@@ -574,6 +851,7 @@ int main(int argc, char ** argv){
     }
     fill_move_lut();
     if (!load_weights(cfg.weights_path)) return 1;
+    if (!cfg.out_dir.empty()) return export_corpus(cfg);
 
     std::ofstream out(cfg.out_path);
     if (!out){

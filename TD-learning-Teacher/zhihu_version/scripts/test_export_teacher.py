@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -7,11 +8,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WEIGHTS = (
-    Path("/home/chakew/Projects/llm_rl_2048")
-    / "artifacts"
-    / "best_td_teacher"
-    / "best_highwin_td.bin"
+WEIGHTS = Path(
+    os.environ.get(
+        "TEACHER_CHECKPOINT",
+        str(
+            ROOT.parents[1]
+            / "runs"
+            / "zhihu_repro_20260729"
+            / "best"
+            / "ckpt_100000000.bin"
+        ),
+    )
 )
 
 
@@ -33,7 +40,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         bin_path = tmp_path / "export_teacher"
-        out_path = tmp_path / "teacher.jsonl"
+        out_dir = tmp_path / "corpus"
+        out_dir.mkdir()
 
         build = run(["g++", "-O3", "-std=c++17", "export_teacher.cpp", "-o", str(bin_path)], timeout=120)
         if build.returncode != 0:
@@ -44,33 +52,33 @@ def main():
                 str(bin_path),
                 "--weights",
                 str(WEIGHTS),
-                "--samples",
-                "8",
                 "--depth",
-                "1",
+                "2",
                 "--seed",
                 "7",
-                "--out",
-                str(out_path),
-                "--max-games",
+                "--out-dir",
+                str(out_dir),
+                "--max-trajectories",
                 "100",
-                "--min-max-tile",
-                "0",
-                "--hard-state-ratio",
-                "0.25",
-                "--report-every",
-                "0",
+                "--late-min-max-tile",
+                "512",
+                "--teacher-core-count",
+                "10",
+                "--split-target",
+                "train:5:3:2",
+                "--split-target",
+                "validation:5:3:2",
+                "--split-target",
+                "test:5:3:2",
             ],
             timeout=60,
         )
         if export.returncode != 0:
             raise AssertionError(export.stdout)
 
-        rows = [json.loads(line) for line in out_path.read_text().splitlines() if line.strip()]
-        if len(rows) != 8:
-            raise AssertionError(f"expected 8 rows, found {len(rows)}")
-
         required = {
+            "schema_version",
+            "record_id",
             "board",
             "valid_moves",
             "action_scores",
@@ -84,19 +92,51 @@ def main():
             "score_margin",
             "search_depth",
             "source",
+            "split",
+            "stratum",
+            "teacher_core",
+            "lineage",
         }
-        for row in rows:
-            missing = required - set(row)
-            if missing:
-                raise AssertionError(f"missing keys {sorted(missing)} in {row}")
-            if row["source"] != "best_highwin_td":
-                raise AssertionError(row)
-            if row["teacher_action"] not in row["valid_moves"]:
-                raise AssertionError(row)
-            if len(row["board"]) != 4 or any(len(line) != 4 for line in row["board"]):
-                raise AssertionError(row["board"])
-            if row["search_depth"] != 1:
-                raise AssertionError(row)
+        seen_trajectories = {}
+        seen_orbits = {}
+        for split in ("train", "validation", "test"):
+            rows = [
+                json.loads(line)
+                for line in (out_dir / f"{split}.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            if len(rows) != 10:
+                raise AssertionError(f"expected 10 {split} rows, found {len(rows)}")
+            strata = {"natural": 0, "hard": 0, "late": 0}
+            for row in rows:
+                missing = required - set(row)
+                if missing:
+                    raise AssertionError(f"missing keys {sorted(missing)} in {row}")
+                if row["source"] != "retained_100m_teacher_policy":
+                    raise AssertionError(row)
+                if row["teacher_action"] not in row["valid_moves"]:
+                    raise AssertionError(row)
+                if set(row["action_scores"]) != {"up", "down", "left", "right"}:
+                    raise AssertionError(row)
+                if set(row["action_ranking"]) != {"up", "down", "left", "right"}:
+                    raise AssertionError(row)
+                if len(row["board"]) != 4 or any(len(line) != 4 for line in row["board"]):
+                    raise AssertionError(row["board"])
+                if row["search_depth"] != 2 or row["split"] != split:
+                    raise AssertionError(row)
+                if row["stratum"] == "late" and row["max_tile"] < 512:
+                    raise AssertionError(row)
+                strata[row["stratum"]] += 1
+                for key, owners in (
+                    ("trajectory_id", seen_trajectories),
+                    ("orbit_id", seen_orbits),
+                ):
+                    identifier = row["lineage"][key]
+                    owner = owners.setdefault(identifier, split)
+                    if owner != split:
+                        raise AssertionError(f"{key} crosses {owner} and {split}")
+            if strata != {"natural": 5, "hard": 3, "late": 2}:
+                raise AssertionError(strata)
 
 
 if __name__ == "__main__":

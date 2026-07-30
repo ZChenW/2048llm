@@ -52,3 +52,32 @@ Run the CLI contract tests:
 /home/chakew/miniconda3/bin/conda run -n td2048 \
   python -m unittest discover -s tests -v
 ```
+
+## Depth-2 Teacher Policy corpus
+
+The Experiment Runner also owns the reproducible, leakage-safe corpus export
+path. Both profiles compile the checked-in C++ exporter, verify the retained
+100M Teacher Policy checkpoint checksum, assign complete trajectories to fixed
+splits before sampling, and independently validate every output row:
+
+```bash
+# Fast end-to-end contract check (30 records).
+python -m llm2048.experiment_runner \
+  --teacher-corpus-config configs/teacher_corpus_depth2_smoke.json \
+  --output-dir runs/teacher-corpus-depth2-smoke
+
+# Opt-in production export (100k train / 10k validation / 10k test).
+python -m llm2048.experiment_runner \
+  --teacher-corpus-config configs/teacher_corpus_depth2_production.json \
+  --output-dir runs/teacher-corpus-depth2-production
+```
+
+The production train split is exactly 50% natural, 30% hard, and 20% late;
+late states have a maximum tile of at least 512. Natural, hard, and late are
+exclusive with precedence `late > hard > natural`. The manifest records
+artifact checksums, a 70k train-only immutable Teacher core checksum, and
+`tau`, calibrated as the median strictly positive top-1 minus top-2 margin
+from train only. Records carry identity symmetry lineage and a canonical D4
+orbit ID for leakage checks; augmentation remains an online-training concern.
+Corpus JSONL remains under the ignored `runs/` directory and must not be
+committed.
