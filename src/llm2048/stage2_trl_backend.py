@@ -111,7 +111,7 @@ def _run(
     import torch
     from datasets import Dataset  # type: ignore[import-untyped]
     from peft import LoraConfig, PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
     import wandb
 
@@ -261,12 +261,25 @@ def _run(
         report_to=[],
         run_name=f"{config.experiment_name}-trl-resume",
     )
+
+    class StopAfterResumeLoadCallback(TrainerCallback):
+        def on_train_begin(
+            self,
+            args: Any,
+            state: Any,
+            control: Any,
+            **kwargs: Any,
+        ) -> Any:
+            control.should_training_stop = True
+            return control
+
     resumed_trainer = GRPOTrainer(  # type: ignore[call-arg,arg-type]
         model=resumed_model,  # type: ignore[arg-type]
         args=resume_arguments,
         train_dataset=dataset,
         processing_class=tokenizer,
         environment_factory=Trl2048Environment,
+        callbacks=[StopAfterResumeLoadCallback()],
     )
     resume_result = resumed_trainer.train(resume_from_checkpoint=str(checkpoint))
     if resume_result.global_step != 1:
@@ -302,6 +315,11 @@ def _run(
         not bool(environment.get("markov_prefix_preserved", True))
         for environment in completed
     )
+    all_members_completed_2_to_4_steps = (
+        len(steps) >= config.rollout.group_size
+        and all(2 <= value <= 4 for value in steps)
+    )
+    rollout_contract_failure = not all_members_completed_2_to_4_steps
     rollout_seconds_samples = [
         float(environment["rollout_seconds"])
         for environment in completed
@@ -355,7 +373,7 @@ def _run(
     result = {
         "schema_version": 1,
         "status": "completed_with_contract_failure"
-        if history_breach
+        if history_breach or rollout_contract_failure
         else "completed",
         "backend": "trl_environment_factory",
         "config_sha256": config_sha256,
@@ -376,9 +394,9 @@ def _run(
             "environment_steps": steps,
             "rewards": rewards,
             "all_members_completed_2_to_4_steps": (
-                len(steps) >= config.rollout.group_size
-                and all(2 <= value <= 4 for value in steps)
+                all_members_completed_2_to_4_steps
             ),
+            "rollout_contract_failure": rollout_contract_failure,
         },
         "gradient_update": {
             "optimizer_step": int(train_result.global_step),
@@ -392,6 +410,7 @@ def _run(
             "optimizer_state": str(optimizer_state),
             "trainer_state": str(trainer_state),
             "resume_step": int(resume_result.global_step),
+            "resume_probe_stopped_before_new_training": True,
         },
         "telemetry": {
             "wandb_entity": entity,
@@ -405,6 +424,9 @@ def _run(
         "environment_contract": {
             "environment_factory_experimental": True,
             "markov_policy": not history_breach,
+            "multi_turn_markov_policy_demonstrated": (
+                not history_breach and not rollout_contract_failure
+            ),
             "history_retained_by_native_tool_loop": history_breach,
             "tool_interface_suffix_only": True,
             "policy_failure_terminates_without_retry": True,
