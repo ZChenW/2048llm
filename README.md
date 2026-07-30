@@ -72,12 +72,12 @@ python -m llm2048.experiment_runner \
   --output-dir runs/teacher-corpus-depth2-production
 ```
 
-The production train split is exactly 50% natural, 30% hard, and 20% late;
-late states have a maximum tile of at least 512. Natural, hard, and late are
-exclusive with precedence `late > hard > natural`. The manifest records
-artifact checksums, a 70k train-only immutable Teacher core checksum, and
-`tau`, calibrated as the median strictly positive top-1 minus top-2 margin
-from train only. Records carry identity symmetry lineage and a canonical D4
-orbit ID for leakage checks; augmentation remains an online-training concern.
+The production train split is exactly 50% Natural States, 30% Hard States, and
+20% Late States; each Late State has a maximum tile of at least 512. These
+Corpus Strata are exclusive with precedence `late > hard > natural`. The
+manifest records artifact checksums, a 70k train-only immutable Teacher Core
+checksum, and the Teacher Margin Scale (`tau`), calibrated from train only.
+Records carry identity Trajectory Lineage and a canonical Symmetry Orbit ID
+for leakage checks; augmentation remains an online-training concern.
 Corpus JSONL remains under the ignored `runs/` directory and must not be
 committed.

@@ -465,14 +465,23 @@ def _validate_record(
     stratum = row["stratum"]
     if stratum not in STRATA:
         raise CorpusError(f"{context}.stratum is unsupported")
-    if stratum == "late" and row["max_tile"] < config.late_min_max_tile:
-        raise CorpusError(f"{context} late state must have max_tile >= 512")
-    if stratum == "hard" and not (
+    meets_hard_rule = (
         row["empty_cells"] <= 4
         or row["legal_move_count"] <= 2
         or margin <= 0.0025
-    ):
-        raise CorpusError(f"{context} hard state does not meet the hard-state rule")
+    )
+    expected_stratum = (
+        "late"
+        if row["max_tile"] >= config.late_min_max_tile
+        else "hard"
+        if meets_hard_rule
+        else "natural"
+    )
+    if stratum != expected_stratum:
+        raise CorpusError(
+            f"{context}.stratum must be {expected_stratum!r} under "
+            "late > hard > natural precedence"
+        )
     if not isinstance(row["teacher_core"], bool):
         raise CorpusError(f"{context}.teacher_core must be a boolean")
     if row["teacher_core"] and split != "train":

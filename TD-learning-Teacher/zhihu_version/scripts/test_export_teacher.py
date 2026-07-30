@@ -8,24 +8,20 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WEIGHTS = Path(
+REPO_ROOT = ROOT.parents[1]
+CONFIG = Path(
     os.environ.get(
-        "TEACHER_CHECKPOINT",
-        str(
-            ROOT.parents[1]
-            / "runs"
-            / "zhihu_repro_20260729"
-            / "best"
-            / "ckpt_100000000.bin"
-        ),
+        "TEACHER_CORPUS_CONFIG",
+        str(REPO_ROOT / "configs" / "teacher_corpus_depth2_smoke.json"),
     )
 )
 
 
-def run(cmd, *, timeout=60):
+def run(cmd, *, cwd=ROOT, env=None, timeout=60):
     return subprocess.run(
         cmd,
-        cwd=ROOT,
+        cwd=cwd,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -34,44 +30,37 @@ def run(cmd, *, timeout=60):
 
 
 def main():
-    if not WEIGHTS.exists():
-        raise AssertionError(f"missing frozen teacher weights: {WEIGHTS}")
+    config = json.loads(CONFIG.read_text())
+    checkpoint = (CONFIG.resolve().parent / config["checkpoint"]["path"]).resolve()
+    if not checkpoint.exists():
+        raise AssertionError(f"missing frozen teacher weights: {checkpoint}")
+    metadata = (
+        CONFIG.resolve().parent / config["checkpoint"]["metadata_path"]
+    ).resolve()
+    if not metadata.exists():
+        raise AssertionError(f"missing frozen teacher metadata: {metadata}")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        bin_path = tmp_path / "export_teacher"
         out_dir = tmp_path / "corpus"
-        out_dir.mkdir()
-
-        build = run(["g++", "-O3", "-std=c++17", "export_teacher.cpp", "-o", str(bin_path)], timeout=120)
-        if build.returncode != 0:
-            raise AssertionError(build.stdout)
-
+        runner_env = os.environ.copy()
+        source_root = str(REPO_ROOT / "src")
+        runner_env["PYTHONPATH"] = os.pathsep.join(
+            filter(None, (source_root, runner_env.get("PYTHONPATH")))
+        )
         export = run(
             [
-                str(bin_path),
-                "--weights",
-                str(WEIGHTS),
-                "--depth",
-                "2",
-                "--seed",
-                "7",
-                "--out-dir",
+                sys.executable,
+                "-m",
+                "llm2048.experiment_runner",
+                "--teacher-corpus-config",
+                str(CONFIG.resolve()),
+                "--output-dir",
                 str(out_dir),
-                "--max-trajectories",
-                "100",
-                "--late-min-max-tile",
-                "512",
-                "--teacher-core-count",
-                "10",
-                "--split-target",
-                "train:5:3:2",
-                "--split-target",
-                "validation:5:3:2",
-                "--split-target",
-                "test:5:3:2",
             ],
-            timeout=60,
+            cwd=REPO_ROOT,
+            env=runner_env,
+            timeout=120,
         )
         if export.returncode != 0:
             raise AssertionError(export.stdout)
@@ -137,6 +126,52 @@ def main():
                         raise AssertionError(f"{key} crosses {owner} and {split}")
             if strata != {"natural": 5, "hard": 3, "late": 2}:
                 raise AssertionError(strata)
+
+        # Corpus mode needs a strict four-action schema. The pre-existing
+        # single-file mode remains a legal-action-only compatibility format.
+        legacy_path = tmp_path / "legacy.jsonl"
+        legacy_export = run(
+            [
+                str(out_dir / "export_teacher"),
+                "--weights",
+                str(checkpoint),
+                "--samples",
+                "8",
+                "--depth",
+                "1",
+                "--seed",
+                "7",
+                "--out",
+                str(legacy_path),
+                "--max-games",
+                "100",
+                "--min-max-tile",
+                "0",
+                "--hard-state-ratio",
+                "0.25",
+                "--report-every",
+                "0",
+            ]
+        )
+        if legacy_export.returncode != 0:
+            raise AssertionError(legacy_export.stdout)
+        legacy_rows = [
+            json.loads(line)
+            for line in legacy_path.read_text().splitlines()
+            if line.strip()
+        ]
+        if len(legacy_rows) != 8:
+            raise AssertionError(
+                f"expected 8 legacy rows, found {len(legacy_rows)}"
+            )
+        for row in legacy_rows:
+            valid_moves = set(row["valid_moves"])
+            if set(row["action_scores"]) != valid_moves:
+                raise AssertionError(row)
+            if set(row["action_ranking"]) != valid_moves:
+                raise AssertionError(row)
+            if any(score is None for score in row["action_scores"].values()):
+                raise AssertionError(row)
 
 
 if __name__ == "__main__":

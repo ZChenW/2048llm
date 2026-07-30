@@ -8,6 +8,42 @@ This project studies whether an open-weight model can learn a strong 2048 policy
 The trained TD-learning policy that supplies expert action judgments for 2048 board states.
 _Avoid_: Teacher model, TD model
 
+**Teacher Policy Corpus**:
+A fixed collection of Teacher Policy trajectory states and action judgments used to seed training and calibrate rewards without crossing trajectory or symmetry boundaries between splits.
+_Avoid_: Static dataset, Teacher dataset
+
+**Teacher Core**:
+The immutable, train-only subset of the Teacher Policy Corpus used as a stable reference across experiments.
+_Avoid_: Validation set, replay buffer
+
+**Corpus Stratum**:
+An exclusive Teacher Policy Corpus category: Late State takes precedence over Hard State, and all remaining states are Natural States.
+_Avoid_: Class, label
+
+**Late State**:
+A Corpus Stratum state whose largest tile is at least 512.
+_Avoid_: End game, terminal state
+
+**Hard State**:
+A non-Late Corpus Stratum state with at most four empty cells, at most two legal actions, or an ambiguous Teacher Policy action margin.
+_Avoid_: Losing state, difficult sample
+
+**Natural State**:
+A Corpus Stratum state that is neither a Late State nor a Hard State.
+_Avoid_: Easy state, random state
+
+**Teacher Margin Scale**:
+The median strictly positive difference between the top two Teacher Policy action scores in the training split, used to scale Action Quality Reward and serialized as `tau`.
+_Avoid_: Temperature
+
+**Symmetry Orbit**:
+The set of board states equivalent under the eight rotations and reflections of the square; a single canonical identity keeps equivalent states within one corpus split.
+_Avoid_: Augmented sample, trajectory
+
+**Trajectory Lineage**:
+The identity that associates a corpus state with its complete source trajectory so all states from that trajectory remain in one split.
+_Avoid_: Chat history, sample index
+
 **Student Policy**:
 An open-weight model trained to choose a move from a 2048 board state by learning from the Teacher Policy.
 _Avoid_: Chatbot, game model

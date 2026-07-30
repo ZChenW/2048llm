@@ -507,33 +507,19 @@ void write_sample_json(std::ostream & out, const Sample & sample, int depth){
         }
     }
     out << "],\"action_scores\":{";
-    for (int order = 0; order < 4; order ++){
-        if (order) out << ",";
-        int ordered_action = JSON_ACTION_ORDER[order];
-        const ActionScore * found = nullptr;
+    bool first_score = true;
+    for (int ordered_action : JSON_ACTION_ORDER){
         for (const auto & action : sample.actions){
-            if (action.action == ordered_action) found = &action;
+            if (action.action != ordered_action) continue;
+            if (!first_score) out << ",";
+            first_score = false;
+            out << "\"" << action.name << "\":" << action.score;
         }
-        out << "\"" << ACTION_NAMES[ordered_action] << "\":";
-        if (found) out << found->score;
-        else out << "null";
     }
     out << "},\"action_ranking\":[";
-    bool first_rank = true;
     for (size_t i = 0; i < sample.actions.size(); i ++){
-        if (!first_rank) out << ",";
-        first_rank = false;
+        if (i) out << ",";
         out << "\"" << sample.actions[i].name << "\"";
-    }
-    for (int ordered_action : JSON_ACTION_ORDER){
-        bool legal = false;
-        for (const auto & action : sample.actions){
-            if (action.action == ordered_action) legal = true;
-        }
-        if (legal) continue;
-        if (!first_rank) out << ",";
-        first_rank = false;
-        out << "\"" << ACTION_NAMES[ordered_action] << "\"";
     }
     out << "]";
     out << ",\"teacher_action\":\"" << (sample.actions.empty() ? "" : sample.actions[0].name) << "\"";

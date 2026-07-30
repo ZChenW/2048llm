@@ -349,6 +349,55 @@ class TeacherCorpusCliTests(unittest.TestCase):
             )
             self.assertFalse((output_directory / "manifest.json").exists())
 
+    def test_teacher_corpus_rejects_mislabeled_exclusive_strata(self) -> None:
+        cases = (
+            (
+                "natural labeled hard state",
+                '                if stratum == "natural":\n'
+                "                    board = [[2, 2, 4, 8], "
+                "[16, 32, 64, 128], [2, 4, 8, 16], [4, 8, 16, 32]]\n",
+                "stratum must be 'hard'",
+            ),
+            (
+                "natural labeled late state",
+                '                if stratum == "natural":\n'
+                "                    board[1][3] = 512\n",
+                "stratum must be 'late'",
+            ),
+            (
+                "hard labeled late state",
+                '                if stratum == "hard":\n'
+                "                    board[1][3] = 512\n",
+                "stratum must be 'late'",
+            ),
+        )
+        board_setup = (
+            "                board = [row[:] for row in boards[stratum]]\n"
+        )
+
+        for name, mislabel, expected_error in cases:
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                root = Path(temporary_directory)
+                mislabeled_exporter = FAKE_EXPORTER.replace(
+                    board_setup, board_setup + mislabel
+                )
+                config = self.write_fixture(root, mislabeled_exporter)
+                output_directory = root / "output"
+
+                completed = self.run_runner(
+                    "--teacher-corpus-config",
+                    str(config),
+                    "--output-dir",
+                    str(output_directory),
+                )
+
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(expected_error, completed.stderr)
+                self.assertFalse((output_directory / "manifest.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
