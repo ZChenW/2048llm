@@ -269,7 +269,9 @@ async def _run(
     ):
         raise BackendSpikePreflightError("Rollout Group common randomness failed")
 
-    model_name = f"{config.experiment_name}-art"
+    # A failed spike attempt must not resume the same W&B run ID as a later
+    # attempt. The output directory is already required to be fresh.
+    model_name = f"{config.experiment_name}-art-{output_directory.name}"
     model = art.TrainableModel(
         name=model_name,
         project=config.telemetry.wandb_project,
