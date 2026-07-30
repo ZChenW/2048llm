@@ -94,6 +94,67 @@ Run the CLI contract tests:
   python -m unittest discover -s tests -v
 ```
 
+## Qwen3.5-4B GRPO feasibility smoke
+
+Install the pinned RTX 50-series training stack in the `td2048` environment:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m pip install -e '.[dev,grpo]'
+```
+
+The smoke configuration pins the public, post-trained
+`Qwen/Qwen3.5-4B` repository at commit
+`c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97`. Its 15 files total
+9,342,907,713 bytes. Cache that exact revision before the run:
+
+```bash
+HF_HUB_DISABLE_XET=1 \
+  /home/chakew/miniconda3/envs/td2048/bin/hf download \
+  Qwen/Qwen3.5-4B \
+  --revision c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97
+```
+
+Validate the immutable BF16/rank-64/group-4 plan without importing the GPU
+stack, contacting W&B, or creating run artifacts:
+
+```bash
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --grpo-smoke-config configs/qwen35_4b_grpo_smoke.json \
+  --output-dir runs/qwen35-4b-grpo-smoke \
+  --dry-run
+```
+
+For the real run, first create the `2048llm-feasibility` W&B project with
+Private, Team, or Restricted visibility. Authenticate outside source control
+by exporting `WANDB_API_KEY` in the shell. An optional `WANDB_ENTITY` selects
+a team; otherwise W&B uses the account's default entity. Before creating a
+run, the runner requires online mode and verifies that the existing project
+has private access. It keeps W&B model upload disabled and writes local
+TensorBoard events:
+
+```bash
+export WANDB_API_KEY
+export WANDB_MODE=online
+export WANDB_LOG_MODEL=false
+
+/home/chakew/miniconda3/bin/conda run -n td2048 \
+  python -m llm2048.experiment_runner \
+  --grpo-smoke-config configs/qwen35_4b_grpo_smoke.json \
+  --output-dir runs/qwen35-4b-grpo-smoke
+```
+
+The real path uses Unsloth `FastVisionModel` in text-only mode, so the vision
+tower is not loaded or trained, together with maintained TRL `GRPOTrainer`;
+project code supplies only the 2048 prompt, Policy Response validation, and
+Action Quality Reward. It attempts BF16 first, records allocated and reserved
+VRAM plus generation/training throughput, saves only a local LoRA adapter,
+reloads it onto the same pinned base-model revision, and tests group 8 only
+when group 4 leaves at least 2 GiB of reserved-VRAM headroom. A BF16 failure
+is written as explicit no-go evidence before any separately reviewed
+quantized fallback.
+
 ## Depth-2 Teacher Policy corpus
 
 The Experiment Runner also owns the reproducible, leakage-safe corpus export
