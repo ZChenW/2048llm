@@ -37,7 +37,7 @@ BACKEND_FAILURE_MODES: dict[BackendName, tuple[str, ...]] = {
         "ART backend imports Megatron registration but omits megatron-core",
         "a zero-variance Rollout Group is skipped and cannot prove backward",
         "the shared-GPU LocalBackend must pause inference while Unsloth trains",
-        "vLLM token-id metadata is required for each generated history",
+        "vLLM must return generated-token logprobs as token IDs",
         "ART internal model configuration is version-pinned and not public API",
     ),
     "trl_environment_factory": (
