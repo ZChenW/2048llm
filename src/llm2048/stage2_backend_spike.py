@@ -649,10 +649,19 @@ def verify_private_wandb_project(wandb: Any, project: str) -> tuple[str, str]:
     }
     """
     try:
-        response = api._service_api.execute_graphql(
-            query,
-            {"entity": entity, "project": project},
-        )
+        variables = {"entity": entity, "project": project}
+        service_api = getattr(api, "_service_api", None)
+        if service_api is not None:
+            response = service_api.execute_graphql(query, variables)
+        else:
+            # W&B 0.25, pinned by ART 0.5.18, uses its vendored GraphQL
+            # document type through the public Api.client retrying client.
+            from wandb_gql import gql  # type: ignore[import-not-found]
+
+            response = api.client.execute(
+                gql(query),
+                variable_values=variables,
+            )
         access = response["project"]["access"]
     except Exception as error:
         raise BackendSpikePreflightError(
