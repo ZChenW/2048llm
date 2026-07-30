@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "status": "completed",
+  "ready_for_teacher_guided_grpo": false,
+  "selected_starting_points": {
+    "direct_action": {
+      "kind": "unchanged_base_model",
+      "model_id": "Qwen/Qwen3.5-4B",
+      "revision": "c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97",
+      "gate_passed": false,
+      "decision": "hold_no_passing_candidate"
+    },
+    "reasoning": {
+      "kind": "lora_adapter",
+      "path": "adapters/reasoning",
+      "base_model_id": "Qwen/Qwen3.5-4B",
+      "base_model_revision": "c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97",
+      "gate_passed": false,
+      "decision": "hold_no_passing_candidate"
+    }
+  }
+}
