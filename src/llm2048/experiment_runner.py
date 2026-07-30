@@ -1559,6 +1559,7 @@ def _parser() -> argparse.ArgumentParser:
     configuration.add_argument("--teacher-corpus-config", type=Path)
     configuration.add_argument("--grpo-smoke-config", type=Path)
     configuration.add_argument("--zero-shot-sft-config", type=Path)
+    configuration.add_argument("--teacher-guided-block-config", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stop-after-step", type=int)
@@ -1583,13 +1584,77 @@ def _parser() -> argparse.ArgumentParser:
         help="immutable artifact lock emitted by --finalize-from",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--policy-variant",
+        choices=("direct_action", "reasoning"),
+    )
     return parser
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parsed = _parser().parse_args(arguments)
     try:
-        if parsed.zero_shot_sft_config is not None:
+        if (
+            parsed.policy_variant is not None
+            and parsed.teacher_guided_block_config is None
+        ):
+            raise ConfigurationError(
+                "--policy-variant requires --teacher-guided-block-config"
+            )
+        if parsed.teacher_guided_block_config is not None:
+            if parsed.policy_variant is None:
+                raise ConfigurationError(
+                    "--policy-variant is required for Teacher-guided blocks"
+                )
+            if (
+                parsed.recovery_from is not None
+                or parsed.recovery_lock is not None
+                or parsed.finalize_from is not None
+                or parsed.finalization_lock is not None
+            ):
+                raise ConfigurationError(
+                    "adapter finalization flags are not valid for "
+                    "Teacher-guided blocks"
+                )
+            if parsed.dry_run and (
+                parsed.resume is not None
+                or parsed.stop_after_step is not None
+            ):
+                raise ConfigurationError(
+                    "--dry-run cannot be combined with --resume or "
+                    "--stop-after-step"
+                )
+            from llm2048.teacher_guided_block import (
+                TeacherGuidedBlockConfig,
+                TeacherGuidedBlockConfigurationError,
+                TeacherGuidedBlockPreflightError,
+                dry_run_block,
+                run_teacher_guided_block,
+            )
+
+            try:
+                block_config = TeacherGuidedBlockConfig.load(
+                    parsed.teacher_guided_block_config
+                )
+            except TeacherGuidedBlockConfigurationError as error:
+                raise ConfigurationError(str(error)) from error
+            try:
+                if parsed.dry_run:
+                    result = dry_run_block(
+                        config=block_config,
+                        variant=parsed.policy_variant,
+                    )
+                else:
+                    result = run_teacher_guided_block(
+                        config=block_config,
+                        variant=parsed.policy_variant,
+                        output_directory=parsed.output_dir,
+                        resume_path=parsed.resume,
+                        stop_after_step=parsed.stop_after_step,
+                    )
+            except TeacherGuidedBlockPreflightError as error:
+                raise ConfigurationError(str(error)) from error
+        elif parsed.zero_shot_sft_config is not None:
             if parsed.resume is not None or parsed.stop_after_step is not None:
                 raise ConfigurationError(
                     "--resume and --stop-after-step are not supported for "

@@ -204,6 +204,80 @@ orchestration seam with mocked model operations, proving that phase 1 returns
 the awaiting status, writes both handoff files, never reloads the Reasoning
 adapter, and rejects any planned-finalization dependency on `failure.json`.
 
+## First paired Teacher-guided GRPO block
+
+Issue #9 is a bounded learning comparison, not a declaration that the earlier
+format/legality gate passed. Its configuration consumes the exact Direct-action
+base model and Reasoning LoRA adapter selected by issue #8, preserves
+`ready_for_teacher_guided_grpo=false` as a run risk, and never relabels either
+candidate as passing.
+
+Point an isolated worktree at the immutable upstream evidence and production
+corpus, then validate both candidates, the 70,000-board Teacher Core, the fixed
+2,000-board validation snapshot, source/member checksums, and split isolation
+without importing Unsloth or touching the GPU:
+
+```bash
+export LLM2048_ZERO_SHOT_GATE_RESULT=/path/to/issue-8/result.json
+export LLM2048_GRPO_FEASIBILITY_RESULT=/path/to/issue-7/result.json
+export LLM2048_TEACHER_CORPUS_MANIFEST=/path/to/production/manifest.json
+export LLM2048_REASONING_START_ADAPTER=/path/to/issue-8/reasoning-adapter
+
+python -m llm2048.experiment_runner \
+  --teacher-guided-block-config \
+    configs/qwen35_4b_teacher_guided_block.json \
+  --policy-variant direct_action \
+  --output-dir runs/qwen35-4b-grpo-block-1-direct \
+  --dry-run
+```
+
+The real path requires the private online W&B credential already loaded by the
+shell. It uses BF16, language-only rank-64 LoRA, group size 4, temperature
+1.0, top-p 0.95, top-k 20, and a 96-token completion limit under maintained
+`trl.GRPOTrainer`. Project code owns only prompt/data projection, the Action
+Quality Reward callback, evaluation, and artifact validation; it does not
+implement an optimizer, advantage calculation, or training loop.
+
+Prove controlled resume on Direct-action by stopping at the mandatory
+step-125 checkpoint and resuming the same output directory:
+
+```bash
+python -m llm2048.experiment_runner \
+  --teacher-guided-block-config \
+    configs/qwen35_4b_teacher_guided_block.json \
+  --policy-variant direct_action \
+  --output-dir runs/qwen35-4b-grpo-block-1-direct \
+  --stop-after-step 125
+
+python -m llm2048.experiment_runner \
+  --teacher-guided-block-config \
+    configs/qwen35_4b_teacher_guided_block.json \
+  --policy-variant direct_action \
+  --output-dir runs/qwen35-4b-grpo-block-1-direct \
+  --resume \
+    runs/qwen35-4b-grpo-block-1-direct/trainer/checkpoint-125
+```
+
+Run Reasoning independently from the selected issue-8 adapter:
+
+```bash
+python -m llm2048.experiment_runner \
+  --teacher-guided-block-config \
+    configs/qwen35_4b_teacher_guided_block.json \
+  --policy-variant reasoning \
+  --output-dir runs/qwen35-4b-grpo-block-1-reasoning
+```
+
+Each completed run evaluates the identical fixed boards before training and at
+step 250. It reports reward components, Teacher Action Agreement, Policy
+Failure classes, action distribution, entropy/KL availability, response
+length, and latency. A deterministic paired bootstrap calls learning
+measurable only when the 95% reward-delta interval has a lower bound above
+zero. Checkpoints remain local and must contain the LoRA adapter,
+optimizer/scheduler states, RNG state, Dynamic Board Pool identity, resolved
+configuration, and resume manifest. The pool is not refreshed and confirmation
+seeds are not consumed during this block.
+
 ## Qwen3.5-4B GRPO feasibility smoke
 
 Install the pinned RTX 50-series training stack in the `td2048` environment:

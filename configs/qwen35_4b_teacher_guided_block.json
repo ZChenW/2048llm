@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "experiment_name": "qwen35-4b-teacher-guided-grpo-block-1",
+  "seed": 2048,
+  "model": {
+    "id": "Qwen/Qwen3.5-4B",
+    "revision": "c7429d5a8ed57f4a9cfdaf1af76a8943eba0ae97",
+    "precision": "bf16",
+    "load_in_4bit": false,
+    "fast_inference": false,
+    "text_only": true,
+    "max_sequence_length": 256
+  },
+  "upstream": {
+    "gate_requirement": "selected_candidates_with_failed_gate_risk",
+    "zero_shot_gate": {
+      "path": "../runs/qwen35-4b-zero-shot-sft-gate/result.json",
+      "environment_override": "LLM2048_ZERO_SHOT_GATE_RESULT",
+      "sha256": "f4f85c85c9542e9d6a45ecd4681362530b210ca2c4d33343a816fca3233c10fc"
+    },
+    "grpo_feasibility": {
+      "path": "../runs/qwen35-4b-grpo-smoke/result.json",
+      "environment_override": "LLM2048_GRPO_FEASIBILITY_RESULT",
+      "sha256": "47edb70d4d368ee9cfd3040a5ac680593f0f4f51450bb94eb1d723990276005f"
+    }
+  },
+  "corpus": {
+    "manifest_path": "../runs/teacher-corpus-depth2-production/manifest.json",
+    "manifest_environment_override": "LLM2048_TEACHER_CORPUS_MANIFEST",
+    "manifest_sha256": "790cdbed663d38b9231e3d0178ad1d6459780034f69a22d6f59562feec7383c2"
+  },
+  "dynamic_board_pool": {
+    "generation": 0,
+    "initial_teacher_core_count": 70000,
+    "strata": {
+      "natural": 35000,
+      "hard": 21000,
+      "late": 14000
+    },
+    "refresh_during_block": false
+  },
+  "validation": {
+    "split": "validation",
+    "count": 2000,
+    "strata": {
+      "natural": 1000,
+      "hard": 600,
+      "late": 400
+    },
+    "batch_size": 2
+  },
+  "lora": {
+    "rank": 64,
+    "alpha": 64,
+    "dropout": 0.0,
+    "finetune_vision_layers": false,
+    "finetune_language_layers": true,
+    "finetune_attention_modules": true,
+    "finetune_mlp_modules": true,
+    "gradient_checkpointing": "unsloth"
+  },
+  "grpo": {
+    "trainer": "trl.GRPOTrainer",
+    "loss_type": "grpo",
+    "group_size": 4,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "generation_batch_size": 4,
+    "max_steps": 250,
+    "learning_rate": 0.000005,
+    "optimizer": "adamw_8bit",
+    "lr_scheduler_type": "constant",
+    "warmup_ratio": 0.0,
+    "weight_decay": 0.0,
+    "max_prompt_length": 160,
+    "max_completion_length": 96,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "beta": 0.0,
+    "mask_truncated_completions": false,
+    "use_vllm": false
+  },
+  "checkpoint": {
+    "save_steps": 125,
+    "final_step": 250,
+    "controlled_interruption_step": 125,
+    "save_optimizer_state": true,
+    "save_scheduler_state": true,
+    "save_rng_state": true
+  },
+  "comparison": {
+    "paired_bootstrap_samples": 2000,
+    "confidence_level": 0.95,
+    "measurable_learning_rule": "paired_reward_delta_lower_ci_gt_zero"
+  },
+  "telemetry": {
+    "wandb_mode": "online",
+    "wandb_entity": "auto",
+    "wandb_project": "2048llm-feasibility",
+    "wandb_project_visibility": "private",
+    "tensorboard": true,
+    "upload_model_checkpoints": false
+  }
+}
