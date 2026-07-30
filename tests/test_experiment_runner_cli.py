@@ -337,12 +337,12 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                     resumed_directory,
                     resumed_artifacts["tensorboard"],
                     "eval/mean_reward",
-                )[-1],
+                ),
                 scalars(
                     uninterrupted_directory,
                     uninterrupted_artifacts["tensorboard"],
                     "eval/mean_reward",
-                )[-1],
+                ),
             )
 
     def test_invalid_configuration_exits_without_creating_run_artifacts(self) -> None:

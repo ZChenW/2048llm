@@ -399,7 +399,8 @@ def run_experiment(
                     "schema_version": 1,
                 },
             )
-        telemetry.log_evaluation(completed_steps, reward_total / completed_steps)
+        if completed_steps == config.total_steps:
+            telemetry.log_evaluation(completed_steps, reward_total / completed_steps)
     finally:
         wandb_directory, tensorboard_directory = telemetry.close()
 
