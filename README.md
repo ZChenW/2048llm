@@ -16,7 +16,7 @@ Run the deterministic fixture:
 
 ```bash
 /home/chakew/miniconda3/bin/conda run -n td2048 \
-  llm2048-experiment \
+  python -m llm2048.experiment_runner \
   --config tests/fixtures/experiment_runner_tracer.json \
   --output-dir runs/experiment-runner-tracer
 ```

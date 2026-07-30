@@ -197,6 +197,19 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _artifact_members(
+    artifact_directory: Path, output_directory: Path, pattern: str
+) -> list[dict[str, str]]:
+    return [
+        {
+            "path": str(path.relative_to(output_directory)),
+            "sha256": _file_sha256(path),
+        }
+        for path in sorted(artifact_directory.rglob(pattern))
+        if path.is_file()
+    ]
+
+
 def _package_version(package: str) -> str:
     try:
         return version(package)
@@ -262,14 +275,10 @@ class Telemetry:
         )
         self._event_writer = EventFileWriter(str(self._tensorboard_directory))
 
-    def log(self, step: int, reward: float, reward_total: float) -> None:
+    def _log(self, step: int, values: dict[str, float]) -> None:
         from tensorboard.compat.proto.event_pb2 import Event
         from tensorboard.compat.proto.summary_pb2 import Summary
 
-        values = {
-            "fixture/reward": reward,
-            "fixture/reward_total": reward_total,
-        }
         self._wandb_run.log(values, step=step)
         self._event_writer.add_event(
             Event(
@@ -284,6 +293,18 @@ class Telemetry:
             )
         )
         self._event_writer.flush()
+
+    def log_training(self, step: int, reward: float, reward_total: float) -> None:
+        self._log(
+            step,
+            {
+                "train/reward": reward,
+                "train/reward_total": reward_total,
+            },
+        )
+
+    def log_evaluation(self, step: int, mean_reward: float) -> None:
+        self._log(step, {"eval/mean_reward": mean_reward})
 
     def close(self) -> tuple[Path, Path]:
         self._event_writer.close()
@@ -367,7 +388,7 @@ def run_experiment(
                     "step": step,
                 },
             )
-            telemetry.log(step, reward, reward_total)
+            telemetry.log_training(step, reward, reward_total)
             completed_steps = step
             _write_json(
                 checkpoint_path,
@@ -378,6 +399,7 @@ def run_experiment(
                     "schema_version": 1,
                 },
             )
+        telemetry.log_evaluation(completed_steps, reward_total / completed_steps)
     finally:
         wandb_directory, tensorboard_directory = telemetry.close()
 
@@ -426,32 +448,46 @@ def run_experiment(
         },
         "artifacts": [
             {
+                "equivalence": "content",
                 "name": "checkpoint",
                 "path": str(checkpoint_path.relative_to(output_directory)),
                 "sha256": _file_sha256(checkpoint_path),
             },
             {
+                "equivalence": "content",
                 "name": "events",
                 "path": str(events_path.relative_to(output_directory)),
                 "sha256": _file_sha256(events_path),
             },
             {
+                "equivalence": "attempt_audit",
                 "name": "invocations",
                 "path": str(invocations_path.relative_to(output_directory)),
                 "sha256": _file_sha256(invocations_path),
             },
             {
+                "equivalence": "content",
                 "name": "result",
                 "path": str(result_path.relative_to(output_directory)),
                 "sha256": _file_sha256(result_path),
             },
             {
+                "equivalence": "semantic_metrics",
                 "identity": f"{experiment_id}:tensorboard",
+                "members": _artifact_members(
+                    tensorboard_directory,
+                    output_directory,
+                    "events.out.tfevents.*",
+                ),
                 "name": "tensorboard",
                 "path": str(relative_tensorboard),
             },
             {
+                "equivalence": "semantic_metrics",
                 "identity": f"{experiment_id}:wandb",
+                "members": _artifact_members(
+                    wandb_directory, output_directory, "run-*.wandb"
+                ),
                 "name": "wandb",
                 "path": str(relative_wandb),
             },

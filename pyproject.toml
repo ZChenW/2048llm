@@ -17,9 +17,6 @@ dev = [
   "mypy>=1.11",
 ]
 
-[project.scripts]
-llm2048-experiment = "llm2048.experiment_runner:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

@@ -13,6 +13,12 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "experiment_runner_tracer.json"
+FIXTURE_BOARD = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [2, 2, 0, 0],
+]
 
 
 class ExperimentRunnerCliTests(unittest.TestCase):
@@ -127,48 +133,28 @@ class ExperimentRunnerCliTests(unittest.TestCase):
                 [
                     {
                         "action": "LEFT",
-                        "board": [
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [2, 2, 0, 0],
-                        ],
+                        "board": FIXTURE_BOARD,
                         "reward": 1.0,
                         "reward_total": 1.0,
                         "step": 1,
                     },
                     {
                         "action": "UP",
-                        "board": [
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [2, 2, 0, 0],
-                        ],
+                        "board": FIXTURE_BOARD,
                         "reward": 0.5,
                         "reward_total": 1.5,
                         "step": 2,
                     },
                     {
                         "action": "RIGHT",
-                        "board": [
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [2, 2, 0, 0],
-                        ],
+                        "board": FIXTURE_BOARD,
                         "reward": -0.25,
                         "reward_total": 1.25,
                         "step": 3,
                     },
                     {
                         "action": "DOWN",
-                        "board": [
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [0, 0, 0, 0],
-                            [2, 2, 0, 0],
-                        ],
+                        "board": FIXTURE_BOARD,
                         "reward": 1.25,
                         "reward_total": 2.5,
                         "step": 4,
@@ -178,8 +164,17 @@ class ExperimentRunnerCliTests(unittest.TestCase):
 
             wandb_directory = output_directory / artifacts["wandb"]["path"]
             tensorboard_directory = output_directory / artifacts["tensorboard"]["path"]
-            self.assertTrue(any(wandb_directory.glob("offline-run-*")))
+            self.assertTrue(any(wandb_directory.rglob("offline-run-*")))
             self.assertTrue(any(tensorboard_directory.glob("events.out.tfevents.*")))
+            for telemetry_name in ("wandb", "tensorboard"):
+                self.assertTrue(artifacts[telemetry_name]["members"])
+                for member in artifacts[telemetry_name]["members"]:
+                    member_path = output_directory / member["path"]
+                    self.assertTrue(member_path.is_file())
+                    self.assertEqual(
+                        member["sha256"],
+                        sha256(member_path.read_bytes()).hexdigest(),
+                    )
             from tensorboard.backend.event_processing.event_accumulator import (
                 EventAccumulator,
             )
@@ -189,16 +184,23 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             self.assertEqual(
                 [
                     (event.step, event.value)
-                    for event in tensorboard_events.Scalars("fixture/reward")
+                    for event in tensorboard_events.Scalars("train/reward")
                 ],
                 [(1, 1.0), (2, 0.5), (3, -0.25), (4, 1.25)],
             )
             self.assertEqual(
                 [
                     (event.step, event.value)
-                    for event in tensorboard_events.Scalars("fixture/reward_total")
+                    for event in tensorboard_events.Scalars("train/reward_total")
                 ],
                 [(1, 1.0), (2, 1.5), (3, 1.25), (4, 2.5)],
+            )
+            self.assertEqual(
+                [
+                    (event.step, event.value)
+                    for event in tensorboard_events.Scalars("eval/mean_reward")
+                ],
+                [(4, 0.625)],
             )
 
     def test_resume_continues_without_repeating_completed_steps(self) -> None:
@@ -278,6 +280,70 @@ class ExperimentRunnerCliTests(unittest.TestCase):
             manifest = json.loads((resumed_directory / "manifest.json").read_text())
             artifact_names = {artifact["name"] for artifact in manifest["artifacts"]}
             self.assertIn("invocations", artifact_names)
+            uninterrupted_manifest = json.loads(
+                (uninterrupted_directory / "manifest.json").read_text()
+            )
+            resumed_artifacts = {
+                artifact["name"]: artifact for artifact in manifest["artifacts"]
+            }
+            uninterrupted_artifacts = {
+                artifact["name"]: artifact
+                for artifact in uninterrupted_manifest["artifacts"]
+            }
+            self.assertEqual(
+                resumed_artifacts["events"]["equivalence"],
+                "content",
+            )
+            self.assertEqual(
+                resumed_artifacts["invocations"]["equivalence"],
+                "attempt_audit",
+            )
+            self.assertEqual(
+                resumed_artifacts["tensorboard"]["equivalence"],
+                "semantic_metrics",
+            )
+
+            from tensorboard.backend.event_processing.event_accumulator import (
+                EventAccumulator,
+            )
+
+            def scalars(
+                run_directory: Path, artifact: dict[str, object], tag: str
+            ) -> list[tuple[int, float]]:
+                accumulator = EventAccumulator(
+                    str(run_directory / str(artifact["path"]))
+                )
+                accumulator.Reload()
+                return [
+                    (event.step, event.value)
+                    for event in accumulator.Scalars(tag)
+                ]
+
+            for tag in ("train/reward", "train/reward_total"):
+                self.assertEqual(
+                    scalars(
+                        resumed_directory,
+                        resumed_artifacts["tensorboard"],
+                        tag,
+                    ),
+                    scalars(
+                        uninterrupted_directory,
+                        uninterrupted_artifacts["tensorboard"],
+                        tag,
+                    ),
+                )
+            self.assertEqual(
+                scalars(
+                    resumed_directory,
+                    resumed_artifacts["tensorboard"],
+                    "eval/mean_reward",
+                )[-1],
+                scalars(
+                    uninterrupted_directory,
+                    uninterrupted_artifacts["tensorboard"],
+                    "eval/mean_reward",
+                )[-1],
+            )
 
     def test_invalid_configuration_exits_without_creating_run_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
