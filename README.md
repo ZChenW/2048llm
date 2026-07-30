@@ -339,6 +339,38 @@ when group 4 leaves at least 2 GiB of reserved-VRAM headroom. A BF16 failure
 is written as explicit no-go evidence before any separately reviewed
 quantized fallback.
 
+## Stage 2 backend spike
+
+Issue #12 compares ART LocalBackend and TRL `environment_factory` with the
+same exact `Qwen/Qwen3-0.6B` revision, BF16 rank-16 LoRA, four-member Rollout
+Group, three-step canonical Training Episode, start snapshot, RNG seed, and
+frozen Environment Reward. The candidates have incompatible maintained
+dependency pins and must use isolated environments; do not replace the proven
+`td2048` stack in place.
+
+The CPU-only contract check does not import either backend or contact W&B:
+
+```bash
+PYTHONPATH=src python -m llm2048.stage2_backend_spike \
+  --config configs/stage2_backend_spike.json \
+  --backend art_local \
+  --output-dir runs/stage2-art-dry-run \
+  --dry-run
+```
+
+Real runs require `WANDB_API_KEY` outside source control, an existing
+`2048llm-feasibility` project with Private, Team, or Restricted access, and
+`WANDB_LOG_MODEL=false`. Install ART with `.[environment-art]` in one isolated
+environment and TRL with `.[environment-trl]` in another. Run the same command
+without `--dry-run`, changing `--backend` and output directory for the second
+candidate. Both runners delegate backward, optimization, saving, and resume to
+the maintained library. Checkpoints stay local; reward and trainer metrics go
+to private W&B and local TensorBoard.
+
+The primary-source compatibility research is in
+`docs/research/stage2-environment-grpo-backends.md`; the final backend choice is
+recorded separately in an ADR after both real smoke paths finish.
+
 ## Depth-2 Teacher Policy corpus
 
 The Experiment Runner also owns the reproducible, leakage-safe corpus export

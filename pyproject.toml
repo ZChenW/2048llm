@@ -30,6 +30,19 @@ grpo = [
   "unsloth-zoo==2026.7.7",
   "wandb==0.28.1",
 ]
+environment-art = [
+  "openpipe-art[backend]==0.5.18",
+]
+environment-trl = [
+  "datasets==4.7.0",
+  "jmespath==1.1.0",
+  "peft==0.20.0",
+  "tensorboard==2.21.0",
+  "torch==2.10.0",
+  "transformers==5.5.0",
+  "trl==1.9.2",
+  "wandb==0.28.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
