@@ -79,8 +79,8 @@ class Game2048:
             or moves < 0
         ):
             raise ValueError("snapshot moves must be a non-negative integer")
-        if not isinstance(rng_state, list):
-            raise ValueError("snapshot RNG state must be a JSON array")
+        if not isinstance(rng_state, (list, tuple)):
+            raise ValueError("snapshot RNG state must be a JSON array or tuple")
         game.board = [row[:] for row in board]
         game.score = score
         game.moves = moves
@@ -95,7 +95,7 @@ class Game2048:
         return {
             "board": [row[:] for row in self.board],
             "moves": self.moves,
-            "rng_state": self._random.getstate(),
+            "rng_state": _nested_list(self._random.getstate()),
             "score": self.score,
         }
 
@@ -184,6 +184,12 @@ def _slide_and_merge(line: Sequence[int]) -> tuple[list[int], int]:
 
 
 def _nested_tuple(value: Any) -> Any:
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return tuple(_nested_tuple(item) for item in value)
+    return value
+
+
+def _nested_list(value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        return [_nested_list(item) for item in value]
     return value

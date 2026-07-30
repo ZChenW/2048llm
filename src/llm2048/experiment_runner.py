@@ -844,9 +844,7 @@ def run_experiment(
             except ValueError as error:
                 raise ConfigurationError(str(error)) from error
             replayed_game = _replay_environment_prefix(config, completed_steps)
-            restored_snapshot = json.loads(json.dumps(game.snapshot()))
-            replayed_snapshot = json.loads(json.dumps(replayed_game.snapshot()))
-            if restored_snapshot != replayed_snapshot:
+            if game.snapshot() != replayed_game.snapshot():
                 raise ConfigurationError(
                     "checkpoint game_snapshot does not match the seeded "
                     "response history"
